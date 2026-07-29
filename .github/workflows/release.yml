@@ -16,25 +16,12 @@ on:
 
 jobs:
   # ----------------------------------------------------------------- macOS
+  # Só Apple Silicon. O runner macos-13 (Intel) não recebe mais máquina - foi
+  # aposentado pela GitHub -, e um job eternamente na fila trava o release,
+  # que espera por ele. Para Macs Intel, rode build_mac.sh num Mac Intel.
   macos:
-    name: macOS - ${{ matrix.label }}
-    runs-on: ${{ matrix.runner }}
-    # O build Intel é opcional: se a GitHub aposentar o runner, o de Apple
-    # Silicon continua sendo entregue em vez de derrubar tudo.
-    continue-on-error: ${{ matrix.optional }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-latest
-            label: Apple Silicon
-            sufixo: macos-apple-silicon
-            optional: false
-          - runner: macos-13
-            label: Intel
-            sufixo: macos-intel
-            optional: true
+    name: macOS - Apple Silicon
+    runs-on: macos-latest
 
     steps:
       - name: Baixar o código
@@ -132,13 +119,13 @@ jobs:
         run: |
           cd dist
           ditto -c -k --keepParent "Tiktok Live Recorder.app" \
-            "TiktokLiveRecorder-${{ matrix.sufixo }}.zip"
+            "TiktokLiveRecorder-macos-apple-silicon.zip"
           ls -lh *.zip
 
       - name: Guardar o resultado
         uses: actions/upload-artifact@v4
         with:
-          name: TiktokLiveRecorder-${{ matrix.sufixo }}
+          name: TiktokLiveRecorder-macos-apple-silicon
           path: dist/*.zip
           if-no-files-found: error
 
@@ -231,9 +218,12 @@ jobs:
           |---|---|
           | Windows 10/11 | `TiktokLiveRecorder-windows-x64.exe` |
           | Mac (M1/M2/M3/M4) | `TiktokLiveRecorder-macos-apple-silicon.zip` |
-          | Mac Intel | `TiktokLiveRecorder-macos-intel.zip` |
 
           Não precisa instalar nada: nem Python, nem ffmpeg. O ffmpeg vai embutido.
+
+          *Mac com processador Intel:* a GitHub aposentou as máquinas Intel, então
+          não há como gerar esse binário automaticamente. Se precisar, rode
+          `build_mac.sh` num Mac Intel — o script faz o pacote localmente.
 
           ## Primeira abertura
 

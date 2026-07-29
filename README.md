@@ -146,9 +146,11 @@ git push -u origin main
 da execução. Também dispara sozinho ao publicar uma tag (`git tag v1.0 &&
 git push --tags`).
 
-Ele monta duas versões: **Apple Silicon** e **Intel**. O build Intel é marcado
-como opcional — se a GitHub aposentar aquele runner, o de Apple Silicon continua
-sendo entregue normalmente.
+Ele monta a versão **Apple Silicon** (M1/M2/M3/M4).
+
+**Mac com Intel:** a GitHub aposentou as máquinas Intel — o runner `macos-13`
+não recebe mais execução, fica na fila indefinidamente. Não há como gerar esse
+binário pelo Actions. Se precisar dele, rode o `build_mac.sh` num Mac Intel.
 
 O workflow **se verifica sozinho** antes de publicar: confere que o ffmpeg foi
 mesmo embutido, que ele não aponta para nenhuma biblioteca de fora do pacote, e

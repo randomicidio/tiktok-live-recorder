@@ -213,10 +213,8 @@ jobs:
 
           ## Baixar
 
-          | Arquivo | Para quem |
-          |---|---|
-          | **`TikTokLiveRecorder.exe`** | Windows 10 e 11 (64 bits) |
-          | **`TikTokLiveRecorder.zip`** | Mac com Apple Silicon (M1, M2, M3, M4) |
+          - **`TikTokLiveRecorder.exe`** (versão para **Windows** 10 e 11, 64 bits)
+          - **`TikTokLiveRecorder.zip`** (versão para **macOS**, Macs com Apple Silicon — M1, M2, M3, M4)
 
           Não precisa instalar nada: nem Python, nem ffmpeg. O ffmpeg vai embutido.
 

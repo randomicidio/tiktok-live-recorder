@@ -118,15 +118,14 @@ jobs:
       - name: Compactar
         run: |
           cd dist
-          ditto -c -k --keepParent "Tiktok Live Recorder.app" \
-            "TiktokLiveRecorder-macos-apple-silicon.zip"
+          ditto -c -k --keepParent "Tiktok Live Recorder.app" "TikTokLiveRecorder.zip"
           ls -lh *.zip
 
       - name: Guardar o resultado
         uses: actions/upload-artifact@v4
         with:
-          name: TiktokLiveRecorder-macos-apple-silicon
-          path: dist/*.zip
+          name: build-macos
+          path: dist/TikTokLiveRecorder.zip
           if-no-files-found: error
 
   # --------------------------------------------------------------- Windows
@@ -172,13 +171,13 @@ jobs:
           $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
           Write-Host "gerado: $exe ($mb MB)"
           if ($mb -lt 20) { throw "o .exe saiu pequeno demais ($mb MB) - o ffmpeg provavelmente não entrou" }
-          Copy-Item $exe "dist\TiktokLiveRecorder-windows-x64.exe"
+          Copy-Item $exe "dist\TikTokLiveRecorder.exe"
 
       - name: Guardar o resultado
         uses: actions/upload-artifact@v4
         with:
-          name: TiktokLiveRecorder-windows-x64
-          path: dist/TiktokLiveRecorder-windows-x64.exe
+          name: build-windows
+          path: dist/TikTokLiveRecorder.exe
           if-no-files-found: error
 
   # --------------------------------------------------------------- Release
@@ -214,10 +213,10 @@ jobs:
 
           ## Baixar
 
-          | Sistema | Arquivo |
+          | Arquivo | Para quem |
           |---|---|
-          | Windows 10/11 | `TiktokLiveRecorder-windows-x64.exe` |
-          | Mac (M1/M2/M3/M4) | `TiktokLiveRecorder-macos-apple-silicon.zip` |
+          | **`TikTokLiveRecorder.exe`** | Windows 10 e 11 (64 bits) |
+          | **`TikTokLiveRecorder.zip`** | Mac com Apple Silicon (M1, M2, M3, M4) |
 
           Não precisa instalar nada: nem Python, nem ffmpeg. O ffmpeg vai embutido.
 
@@ -244,6 +243,13 @@ jobs:
           Grava na qualidade `origin` do TikTok — seu vídeo original, sem recompressão,
           na resolução e taxa de quadros que você transmitiu.
           EOF
+
+          # Refazer uma tag (git tag -f) tem que substituir o release, não
+          # esbarrar num "already exists" e perder o build inteiro.
+          if gh release view "$VERSAO" >/dev/null 2>&1; then
+            echo "release $VERSAO já existe - substituindo"
+            gh release delete "$VERSAO" --yes
+          fi
 
           gh release create "$VERSAO" \
             --title "Tiktok Live Recorder $VERSAO" \

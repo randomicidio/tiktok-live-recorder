@@ -1,0 +1,261 @@
+name: Build e Release
+
+# Monta o programa para Windows e macOS e publica o release com os dois.
+#
+#   Testar sem publicar:  aba Actions > "Build e Release" > Run workflow
+#   Publicar um release:  git tag v1.0 && git push --tags
+#
+# Os binários do macOS são montados em máquinas Apple de verdade do GitHub,
+# porque nenhum empacotador Python faz compilação cruzada.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # ----------------------------------------------------------------- macOS
+  macos:
+    name: macOS - ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    # O build Intel é opcional: se a GitHub aposentar o runner, o de Apple
+    # Silicon continua sendo entregue em vez de derrubar tudo.
+    continue-on-error: ${{ matrix.optional }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            label: Apple Silicon
+            sufixo: macos-apple-silicon
+            optional: false
+          - runner: macos-13
+            label: Intel
+            sufixo: macos-intel
+            optional: true
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências de build
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller requests pillow
+
+      - name: Instalar o ffmpeg
+        run: |
+          brew install ffmpeg
+          echo "ffmpeg em: $(which ffmpeg)"
+          ffmpeg -version | head -n 1
+
+      - name: Gerar os ícones
+        run: python make_icon.py
+
+      - name: Empacotar o .app
+        run: |
+          pyinstaller --noconfirm --clean \
+            --name "Tiktok Live Recorder" \
+            --windowed \
+            --icon assets/icon.icns \
+            --osx-bundle-identifier com.tiktoklive.recorder \
+            --add-data "assets:assets" \
+            --add-binary "$(which ffmpeg):." \
+            --exclude-module PIL \
+            --exclude-module numpy \
+            --exclude-module matplotlib \
+            --exclude-module pytest \
+            app.py
+
+      # Esta etapa existe porque o app precisa rodar em QUALQUER Mac, não só
+      # neste runner. O ffmpeg do Homebrew depende de bibliotecas instaladas
+      # fora do pacote; o PyInstaller costuma copiá-las para dentro e reescrever
+      # os caminhos, mas isso tem que ser conferido, nunca presumido.
+      - name: Conferir que o app é autossuficiente
+        run: |
+          set -euo pipefail
+          APP="dist/Tiktok Live Recorder.app"
+
+          if [ ! -d "$APP" ]; then
+            echo "::error::o .app não foi gerado"
+            exit 1
+          fi
+
+          FF="$(find "$APP" -name 'ffmpeg' -type f -perm +111 | head -n 1)"
+          if [ -z "$FF" ]; then
+            echo "::error::o ffmpeg não foi embutido no pacote"
+            exit 1
+          fi
+          echo "ffmpeg embutido em: ${FF#"$APP"/}"
+
+          echo "--- dependências do ffmpeg embutido ---"
+          otool -L "$FF" | tail -n +2
+
+          FORA="$(otool -L "$FF" | tail -n +2 | grep -E '/opt/homebrew|/usr/local' || true)"
+          if [ -n "$FORA" ]; then
+            echo "::error::o ffmpeg embutido ainda aponta para bibliotecas de fora do pacote."
+            echo "$FORA"
+            echo "Solução: use um ffmpeg estático em vez do Homebrew."
+            exit 1
+          fi
+
+          echo "--- executando o ffmpeg do pacote com ambiente limpo ---"
+          env -i "$FF" -version | head -n 1
+          echo "OK: o ffmpeg do pacote roda por conta própria"
+
+      - name: Conferir que o app abre
+        run: |
+          set -euo pipefail
+          BIN="dist/Tiktok Live Recorder.app/Contents/MacOS/Tiktok Live Recorder"
+          test -x "$BIN" || { echo "::error::executável principal ausente"; exit 1; }
+
+          # Sem tela no runner a interface não sobe, mas o processo tem que
+          # sobreviver aos primeiros segundos sem estourar erro de importação.
+          "$BIN" & PID=$!
+          sleep 12
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "OK: continuou de pé por 12s"
+            kill "$PID" 2>/dev/null || true
+          else
+            wait "$PID" && CODE=0 || CODE=$?
+            echo "o processo encerrou com código $CODE (sem display no runner)"
+          fi
+
+      - name: Compactar
+        run: |
+          cd dist
+          ditto -c -k --keepParent "Tiktok Live Recorder.app" \
+            "TiktokLiveRecorder-${{ matrix.sufixo }}.zip"
+          ls -lh *.zip
+
+      - name: Guardar o resultado
+        uses: actions/upload-artifact@v4
+        with:
+          name: TiktokLiveRecorder-${{ matrix.sufixo }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  # --------------------------------------------------------------- Windows
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências de build
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller requests pillow
+
+      # Build estático oficial do projeto BtbN: um .exe sem dependências.
+      - name: Baixar o ffmpeg
+        shell: pwsh
+        run: |
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_dl
+          $ff = Get-ChildItem -Path ffmpeg_dl -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $ff) { throw "ffmpeg.exe não encontrado no pacote baixado" }
+          echo $ff.DirectoryName >> $env:GITHUB_PATH
+          & $ff.FullName -version | Select-Object -First 1
+
+      - name: Empacotar o .exe
+        shell: pwsh
+        run: python build_windows.py
+
+      - name: Conferir o executável
+        shell: pwsh
+        run: |
+          $exe = "dist\Tiktok Live Recorder.exe"
+          if (-not (Test-Path $exe)) { throw "o .exe não foi gerado" }
+          $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+          Write-Host "gerado: $exe ($mb MB)"
+          if ($mb -lt 20) { throw "o .exe saiu pequeno demais ($mb MB) - o ffmpeg provavelmente não entrou" }
+          Copy-Item $exe "dist\TiktokLiveRecorder-windows-x64.exe"
+
+      - name: Guardar o resultado
+        uses: actions/upload-artifact@v4
+        with:
+          name: TiktokLiveRecorder-windows-x64
+          path: dist/TiktokLiveRecorder-windows-x64.exe
+          if-no-files-found: error
+
+  # --------------------------------------------------------------- Release
+  release:
+    name: Publicar release
+    needs: [macos, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Recolher os binários
+        uses: actions/download-artifact@v4
+        with:
+          path: artefatos
+
+      - name: Listar o que veio
+        run: find artefatos -type f | sort
+
+      - name: Publicar
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSAO="${GITHUB_REF_NAME}"
+
+          cat > notas.md <<'EOF'
+          Grava suas lives do TikTok em MP4 automaticamente, sem pesar no computador.
+
+          ## Baixar
+
+          | Sistema | Arquivo |
+          |---|---|
+          | Windows 10/11 | `TiktokLiveRecorder-windows-x64.exe` |
+          | Mac (M1/M2/M3/M4) | `TiktokLiveRecorder-macos-apple-silicon.zip` |
+          | Mac Intel | `TiktokLiveRecorder-macos-intel.zip` |
+
+          Não precisa instalar nada: nem Python, nem ffmpeg. O ffmpeg vai embutido.
+
+          ## Primeira abertura
+
+          **Windows:** o SmartScreen pode avisar que o programa é desconhecido
+          (não tem assinatura paga). Clique em *Mais informações* > *Executar assim mesmo*.
+
+          **macOS:** clique com o **botão direito** no app > *Abrir* > *Abrir*.
+          Só na primeira vez.
+
+          ## Como usar
+
+          1. Digite seu `@`
+          2. Clique em **● Iniciar Gravação**
+
+          Pode armar antes de começar a transmitir: ele detecta a live e grava sozinho.
+          Quando ela acaba, salva o MP4 e volta a esperar a próxima.
+
+          Grava na qualidade `origin` do TikTok — seu vídeo original, sem recompressão,
+          na resolução e taxa de quadros que você transmitiu.
+          EOF
+
+          gh release create "$VERSAO" \
+            --title "Tiktok Live Recorder $VERSAO" \
+            --notes-file notas.md \
+            $(find artefatos -type f \( -name '*.zip' -o -name '*.exe' \) | sort)

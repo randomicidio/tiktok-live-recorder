@@ -1,0 +1,19 @@
+# Resultados de build
+dist/
+build/
+*.spec
+.venv-build/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Dados locais (config guarda o seu @; gravações são pesadas)
+config.json
+Gravacoes/
+Teste1/
+.thumbs/
+
+# Sistema
+.DS_Store
+Thumbs.db

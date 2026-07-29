@@ -249,7 +249,19 @@ jobs:
             gh release delete "$VERSAO" --yes
           fi
 
+          WIN="artefatos/build-windows/TikTokLiveRecorder.exe"
+          MAC="artefatos/build-macos/TikTokLiveRecorder.zip"
+          for f in "$WIN" "$MAC"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::binário esperado não veio dos builds: $f"
+              exit 1
+            fi
+          done
+
+          # O texto após o "#" vira o rótulo do asset: é o que a lista de
+          # Assets exibe, enquanto o arquivo baixado mantém o nome limpo.
           gh release create "$VERSAO" \
             --title "Tiktok Live Recorder $VERSAO" \
             --notes-file notas.md \
-            $(find artefatos -type f \( -name '*.zip' -o -name '*.exe' \) | sort)
+            "$WIN#TikTokLiveRecorder.exe (Windows 10/11, 64 bits)" \
+            "$MAC#TikTokLiveRecorder.zip (macOS, Apple Silicon)"

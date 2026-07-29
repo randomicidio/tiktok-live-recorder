@@ -12,7 +12,9 @@ __pycache__/
 config.json
 Gravacoes/
 Teste1/
+ProgramaVersao1/
 .thumbs/
+*.ttgifts
 
 # Sistema
 .DS_Store

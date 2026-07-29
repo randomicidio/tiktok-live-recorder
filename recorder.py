@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
+import gift_log
 import resources
 import tiktok_api
 
@@ -135,6 +136,11 @@ class Recorder:
         self.session_started: datetime | None = None
         self.session_dir = ""
 
+        # Registro de presentes e chat, gravado junto e salvo num .ttgifts.
+        # Sem a biblioteca TikTokLive instalada ele simplesmente não liga.
+        self.registrar_presentes = True
+        self._gift_log = gift_log.GiftLogger(emit) if gift_log.DISPONIVEL else None
+
     def session_size(self) -> int:
         """Bytes ja gravados na sessao atual, somando todas as partes.
 
@@ -195,6 +201,11 @@ class Recorder:
         """Pede parada e encerra o ffmpeg com elegancia."""
         self._stop.set()
         self._terminate_proc()
+
+    @property
+    def presentes_registrados(self) -> int:
+        """Quantos presentes o registro já viu nesta sessão."""
+        return self._gift_log.total if self._gift_log else 0
 
     def _terminate_proc(self) -> None:
         """Encerra o ffmpeg rapidamente, sem medo de truncar.
@@ -315,6 +326,11 @@ class Recorder:
         self.session_started = started
         self.session_dir = workdir
 
+        # O registro de presentes usa o MESMO instante zero da gravação: e o
+        # que permite casar cada animação com o segundo certo do vídeo depois.
+        if self.registrar_presentes and self._gift_log is not None:
+            self._gift_log.start(username, os.path.join(outdir, base), started)
+
         while not self._stop.is_set():
             option = info.pick(quality)
             if not option:
@@ -333,7 +349,14 @@ class Recorder:
                     + (f" ({option.resolution})" if option.resolution else ""),
                 ),
             )
-            self.emit("log", f"Parte {part_no}: {option.label}")
+            # "Média (HD)" e um nome de faixa do TikTok, nao um julgamento: se
+            # a live nao oferece `origin`, essa PODE ser a melhor que existe.
+            if option.quality == "origin":
+                nota = "original, sem recompressão"
+            else:
+                nota = ("melhor disponível — esta live não está oferecendo a "
+                        "qualidade original")
+            self.emit("log", f"Parte {part_no}: {option.label} ({nota})")
 
             code = self._run_ffmpeg(option.best_url, part_path)
 
@@ -362,6 +385,11 @@ class Recorder:
         self.recording = False
         self.current_file = ""
         self._finalize(parts, workdir, outdir, base, started)
+
+        # Só depois do .mp4 existir: o pacote aponta para ele pelo nome.
+        if self._gift_log is not None and self._gift_log.ativo:
+            self._gift_log.stop()
+
         self.session_started = None
         self.session_dir = ""
 

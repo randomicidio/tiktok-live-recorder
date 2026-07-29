@@ -35,6 +35,7 @@ DEFAULTS = {
     "outdir": resources.default_output_dir(),
     "poll_seconds": 30,
     "keep_waiting": True,
+    "registrar_presentes": True,
     "cookie": "",
 }
 
@@ -243,6 +244,13 @@ class App(tk.Tk):
             text="Continuar aguardando as próximas lives depois que uma terminar",
             variable=self.keep_var,
         ).pack(anchor="w")
+
+        self.presentes_var = tk.BooleanVar(value=bool(self.cfg["registrar_presentes"]))
+        ttk.Checkbutton(
+            opcoes,
+            text="Registrar presentes e chat (gera o pacote para inserir as animações depois)",
+            variable=self.presentes_var,
+        ).pack(anchor="w", pady=(4, 0))
 
         intervalo = ttk.Frame(main)
         intervalo.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
@@ -485,6 +493,11 @@ class App(tk.Tk):
     def _check_dependencies(self) -> None:
         if not recorder.find_ffmpeg():
             self._log("AVISO: ffmpeg não encontrado no PATH - a gravação não vai funcionar.")
+        if recorder.gift_log.DISPONIVEL:
+            self._log("Registro de presentes e chat: disponível.")
+        else:
+            self._log("AVISO: registro de presentes indisponível (falta a biblioteca "
+                      "TikTokLive) - a gravação funciona normalmente.")
         self._log("Pronto.")
 
     def _pick_dir(self) -> None:
@@ -507,6 +520,7 @@ class App(tk.Tk):
                 "outdir": self.outdir_var.get().strip(),
                 "poll_seconds": int(self.poll_var.get()),
                 "keep_waiting": bool(self.keep_var.get()),
+                "registrar_presentes": bool(self.presentes_var.get()),
             }
         )
         save_config(self.cfg)
@@ -540,7 +554,9 @@ class App(tk.Tk):
 
         opcao = info.pick("origin")
         if opcao:
-            self._log(f"Melhor qualidade disponível: {opcao.label}")
+            extra = ("" if opcao.quality == "origin"
+                     else "  (a original não está sendo oferecida nesta live)")
+            self._log(f"Melhor qualidade disponível: {opcao.label}{extra}")
 
         # Uma verificacao manual nao pode atropelar o estado de quem ja esta
         # gravando ou armado.
@@ -569,6 +585,7 @@ class App(tk.Tk):
 
         self._persist()
         self._apply_state("aguardando", "Verificando...")
+        self.recorder.registrar_presentes = bool(self.presentes_var.get())
         self.recorder.start(
             username=user,
             outdir=outdir,

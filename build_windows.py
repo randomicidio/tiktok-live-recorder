@@ -52,12 +52,17 @@ def main() -> None:
         "--icon", icone,
         "--add-data", f"{os.path.join(BASE, 'assets')}{os.pathsep}assets",
         "--add-binary", f"{ffmpeg}{os.pathsep}.",
+        # O registro de presentes usa TikTokLive, que carrega submodulos por
+        # nome - sem collect-all o PyInstaller nao os encontra.
+        "--collect-all", "TikTokLive",
+        # betterproto.plugin e um plugin do protoc: aborta ao ser importado e
+        # nao serve para nada em tempo de execucao.
+        "--exclude-module", "betterproto.plugin",
         # Nada disso e usado pelo programa; fora daqui o executavel incha a toa.
         "--exclude-module", "PIL",
         "--exclude-module", "numpy",
         "--exclude-module", "matplotlib",
         "--exclude-module", "pytest",
-        "--exclude-module", "unittest",
         os.path.join(BASE, "app.py"),
     ]
 

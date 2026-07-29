@@ -16,6 +16,12 @@ ProgramaVersao1/
 .thumbs/
 *.ttgifts
 
+# libmpv (112 MB) - baixada pelo script de build, nao versionada
+mpvlib/
+
+# Conjunto de emoji (13 MB) - gerado por emoji_pack.py, chamado pelo build
+assets/emoji.zip
+
 # Sistema
 .DS_Store
 Thumbs.db

@@ -35,10 +35,20 @@ def main() -> None:
         sys.exit("Este script gera o executável do Windows. No Mac use build_mac.sh.")
 
     ffmpeg = acha_ffmpeg()
+    libmpv = os.path.join(BASE, "mpvlib", "libmpv-2.dll")
+    if not os.path.exists(libmpv):
+        sys.exit("libmpv-2.dll não está em mpvlib/ - o editor não teria prévia.\n"
+                 "Baixe de https://github.com/shinchiro/mpv-winbuild-cmake/releases "
+                 "(pacote mpv-dev) e coloque a DLL nessa pasta.")
     icone = os.path.join(BASE, "assets", "icon.ico")
     if not os.path.exists(icone):
         print("Ícone ausente; gerando...")
         subprocess.run([sys.executable, os.path.join(BASE, "make_icon.py")], check=True)
+
+    emoji = os.path.join(BASE, "assets", "emoji.zip")
+    if not os.path.exists(emoji):
+        print("Conjunto de emoji ausente; baixando...")
+        subprocess.run([sys.executable, os.path.join(BASE, "emoji_pack.py")], check=True)
 
     print(f"Empacotando {NOME} v{resources.APP_VERSION}")
     print(f"  ffmpeg: {ffmpeg} ({os.path.getsize(ffmpeg) / 1024 / 1024:.0f} MB)\n")
@@ -58,8 +68,10 @@ def main() -> None:
         # betterproto.plugin e um plugin do protoc: aborta ao ser importado e
         # nao serve para nada em tempo de execucao.
         "--exclude-module", "betterproto.plugin",
-        # Nada disso e usado pelo programa; fora daqui o executavel incha a toa.
-        "--exclude-module", "PIL",
+        # O editor usa a libmpv para a previa com as camadas.
+        "--add-binary", f"{libmpv}{os.pathsep}mpvlib",
+        "--hidden-import", "mpv",
+        # PIL desenha o chat e recorta os avatares - agora e obrigatoria.
         "--exclude-module", "numpy",
         "--exclude-module", "matplotlib",
         "--exclude-module", "pytest",

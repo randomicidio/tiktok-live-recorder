@@ -23,6 +23,7 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
+import editor
 import recorder
 import resources
 import tiktok_api
@@ -204,8 +205,15 @@ class App(tk.Tk):
         self._set_window_icon()
         self._build_header(self)
 
-        main = ttk.Frame(self, padding=18)
-        main.pack(fill="both", expand=True)
+        self.abas = ttk.Notebook(self)
+        self.abas.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+
+        main = ttk.Frame(self.abas, padding=18)
+        self.abas.add(main, text="  Gravar  ")
+
+        self.editor = editor.Editor(self.abas,
+                                    lambda k, v="": self.events.put((k, v)))
+        self.abas.add(self.editor, text="  Editar  ")
         main.columnconfigure(1, weight=1)
         main.rowconfigure(7, weight=1)
 
@@ -480,6 +488,12 @@ class App(tk.Tk):
             font=("Segoe UI", 9), bg="#e2e8f0", fg="#0f172a", bd=1,
             padx=10, pady=3, cursor="hand2",
         ).pack(side="left", padx=8)
+        tk.Button(
+            acoes, text="✂  Abrir no editor",
+            command=lambda p=caminho: self._abrir_no_editor(p),
+            font=("Segoe UI", 9), bg="#dcfce7", fg="#14532d", bd=1,
+            padx=10, pady=3, cursor="hand2",
+        ).pack(side="left")
 
         self.log.configure(state="normal")
         self.log.insert("end", "\n")
@@ -490,9 +504,19 @@ class App(tk.Tk):
 
     # -------------------------------------------------------------- helpers
 
+    def _abrir_no_editor(self, caminho: str) -> None:
+        """Manda a gravação recém-terminada direto para a aba de edição."""
+        self.abas.select(self.editor)
+        self.editor.abrir(caminho)
+
     def _check_dependencies(self) -> None:
         if not recorder.find_ffmpeg():
             self._log("AVISO: ffmpeg não encontrado no PATH - a gravação não vai funcionar.")
+        if editor._acha_libmpv():
+            self._log("Prévia do editor: disponível.")
+        else:
+            self._log("AVISO: prévia do editor indisponível (libmpv ausente) - "
+                      "a exportação funciona mesmo assim.")
         if recorder.gift_log.DISPONIVEL:
             self._log("Registro de presentes e chat: disponível.")
         else:
@@ -634,6 +658,12 @@ class App(tk.Tk):
                     if getattr(value, "final_path", ""):
                         self._apply_state("concluido", "Gravação salva")
                         self._log_card(value)
+                elif kind == "exportou":
+                    if value:
+                        self._log(f"Vídeo exportado: {os.path.basename(str(value))}")
+                        self._apply_state("concluido", "Vídeo exportado")
+                    else:
+                        self._log("A exportação não terminou. Veja o registro.")
                 elif kind == "finished":
                     self._sync_buttons()
         except queue.Empty:
@@ -650,6 +680,10 @@ class App(tk.Tk):
                 return
         self._persist()
         self.recorder.stop()
+        try:
+            self.editor.encerrar()
+        except Exception:                            # noqa: BLE001
+            pass
         self.destroy()
 
 

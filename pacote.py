@@ -13,6 +13,7 @@ saia de catálogo.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import zipfile
@@ -21,7 +22,12 @@ from dataclasses import dataclass, field
 EXTENSAO = ".ttgifts"
 MANIFESTO = "manifesto.json"
 PASTA_ANIM = "animacoes"
-VERSAO = 1
+PASTA_FIGURAS = "figuras"
+VERSAO = 2
+
+# Marca o lugar de um emote dentro do texto da mensagem. Fica gravada assim
+# para a posição continuar certa mesmo que a figura não venha junto.
+MARCA_EMOTE = "￼"
 
 
 class PacoteError(Exception):
@@ -76,9 +82,21 @@ class Comentario:
     hora: str = ""
     # Chegou na fila acumulada logo após conectar: o instante não é confiável.
     acumulado: bool = False
+    # Emotes próprios da live: posição no texto -> identificador da figura.
+    emotes: dict[int, str] = field(default_factory=dict)
+    # Selos do apelido (nível, clube de fãs, ranking), já como figura.
+    selos: list[str] = field(default_factory=list)          # antes do apelido
+    selos_direita: list[str] = field(default_factory=list)   # depois
 
     @classmethod
     def de_dict(cls, d: dict) -> "Comentario":
+        # No JSON a chave é texto; aqui ela volta a ser índice.
+        emotes = {}
+        for pos, ident in (d.get("emotes") or {}).items():
+            try:
+                emotes[int(pos)] = str(ident)
+            except (TypeError, ValueError):
+                continue
         return cls(
             t=float(d.get("t") or 0),
             texto=d.get("texto") or "",
@@ -87,6 +105,9 @@ class Comentario:
             avatar=d.get("avatar") or "",
             hora=d.get("hora") or "",
             acumulado=bool(d.get("acumulado")),
+            emotes=emotes,
+            selos=[str(i) for i in (d.get("selos") or [])],
+            selos_direita=[str(i) for i in (d.get("selos_direita") or [])],
         )
 
 
@@ -101,11 +122,30 @@ class Pacote:
     offset_segundos: float = 0.0
     presentes: list[Presente] = field(default_factory=list)
     comentarios: list[Comentario] = field(default_factory=list)
+    _figuras: dict = field(default_factory=dict, repr=False)
 
     @property
     def com_animacao(self) -> list[Presente]:
         """Só os presentes cuja animação está guardada no pacote."""
         return [p for p in self.presentes if p.animacao]
+
+    def abrir_figura(self, ident: str):
+        """A figura de um emote da live, ou None se não veio no pacote.
+
+        Guardada aberta: o mesmo emote reaparece em muitos quadros seguidos.
+        """
+        if ident in self._figuras:
+            return self._figuras[ident]
+        img = None
+        try:
+            from PIL import Image
+            with zipfile.ZipFile(self.caminho) as z:
+                with z.open(f"{PASTA_FIGURAS}/{ident}.png") as fh:
+                    img = Image.open(io.BytesIO(fh.read())).convert("RGBA")
+        except (KeyError, zipfile.BadZipFile, OSError, ValueError):
+            img = None
+        self._figuras[ident] = img
+        return img
 
     def extrair_animacao(self, presente: Presente, destino: str) -> str:
         """Coloca a animação desse presente em disco e devolve a pasta."""
@@ -151,11 +191,13 @@ def caminho_para(video: str) -> str:
 
 def criar(destino: str, video: str, conta: str, inicio: str,
           presentes: list[dict], animacoes: dict[str, str],
-          comentarios: list[dict] | None = None, offset: float = 0.0) -> str:
+          comentarios: list[dict] | None = None, offset: float = 0.0,
+          figuras: dict[str, bytes] | None = None) -> str:
     """Monta o .ttgifts.
 
     `animacoes` mapeia o identificador da animação (video_md5) para a pasta em
-    disco de onde copiar os arquivos.
+    disco de onde copiar os arquivos. `figuras` são as imagens pequenas que o
+    chat usa - emotes próprios da live e selos do apelido -, por identificador.
     """
     usadas = set()
     try:
@@ -168,6 +210,10 @@ def criar(destino: str, video: str, conta: str, inicio: str,
                     if os.path.isfile(origem):
                         z.write(origem, f"{PASTA_ANIM}/{chave}/{nome}")
                         usadas.add(chave)
+
+            for ident, dados in (figuras or {}).items():
+                if dados:
+                    z.writestr(f"{PASTA_FIGURAS}/{ident}.png", dados)
 
             manifesto = {
                 "versao": VERSAO,
@@ -194,8 +240,11 @@ def abrir(caminho: str) -> Pacote:
         with zipfile.ZipFile(caminho) as z:
             with z.open(MANIFESTO) as fh:
                 m = json.loads(fh.read().decode("utf-8"))
-            guardadas = {n.split("/")[1] for n in z.namelist()
+            nomes = z.namelist()
+            guardadas = {n.split("/")[1] for n in nomes
                          if n.startswith(PASTA_ANIM + "/") and n.count("/") >= 2}
+            figuras = {n[len(PASTA_FIGURAS) + 1:-4] for n in nomes
+                       if n.startswith(PASTA_FIGURAS + "/") and n.endswith(".png")}
     except (KeyError, zipfile.BadZipFile, OSError, ValueError) as e:
         raise PacoteError(f"Pacote inválido: {e}") from e
 
@@ -212,6 +261,12 @@ def abrir(caminho: str) -> Pacote:
     for pres in p.presentes:
         if pres.animacao and pres.animacao not in guardadas:
             pres.animacao = ""
+    # o mesmo para as figuras: sem a imagem, a marca no texto viraria um vazio
+    for c in p.comentarios:
+        if c.emotes:
+            c.emotes = {pos: i for pos, i in c.emotes.items() if i in figuras}
+        c.selos = [i for i in c.selos if i in figuras]
+        c.selos_direita = [i for i in c.selos_direita if i in figuras]
     return p
 
 

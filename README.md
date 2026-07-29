@@ -125,6 +125,9 @@ python build_windows.py
 Sai em `dist\Tiktok Live Recorder.exe`. Precisa de Python, PyInstaller
 (`pip install pyinstaller`) e ffmpeg no PATH — só na máquina que empacota.
 
+Na primeira vez o build baixa `assets/emoji.zip` (13 MB, as figuras usadas
+para desenhar o chat). Dá para adiantar com `python emoji_pack.py`.
+
 ## macOS — pelo GitHub Actions (sem precisar de um Mac)
 
 Este é o caminho recomendado. O GitHub tem máquinas macOS de verdade, e o
@@ -197,15 +200,44 @@ de entregar um app quebrado.*
 | `app.py` | Interface gráfica |
 | `tiktok_api.py` | Descobre se você está ao vivo e as URLs do vídeo |
 | `recorder.py` | Controla o ffmpeg, reconexão, montagem do MP4 e miniaturas |
+| `gift_log.py` | Registra presentes, chat e emotes durante a live |
+| `pacote.py` | Lê e escreve o `.ttgifts` que acompanha o vídeo |
+| `editor.py` | Aba do editor: prévia com as camadas e exportação |
+| `compositor.py` | Monta o vídeo final com as animações e o chat |
+| `tipografia.py` | Desenha texto de qualquer idioma e os emoji |
 | `resources.py` | Acha arquivos e binários, empacotado ou não |
 | `make_icon.py` | Gera os ícones (`.ico`, `.icns`, `.png`) |
+| `emoji_pack.py` | Monta `assets/emoji.zip` (chamado pelo build) |
 | `build_windows.py` | Empacota o `.exe` |
 | `build_mac.sh` | Empacota o `.app` (rodar num Mac) |
 | `.github/workflows/build-mac.yml` | Monta o `.app` no GitHub Actions |
 
-## Limitação conhecida
+## Limitações conhecidas
 
 Os endpoints usados são internos do TikTok, não uma API oficial e documentada.
 Eles funcionam hoje e são os mesmos que o site usa, mas o TikTok pode mudá-los
 sem aviso. Se um dia parar de funcionar, o sintoma será "Falhou" ao clicar em
 Verificar agora — o que precisará de ajuste é o `tiktok_api.py`.
+
+O chat desenhado é uma reconstrução: fica muito parecido, não idêntico.
+
+Emotes próprios da live e selos do apelido (nível, clube de fãs, ranking) só
+aparecem em **gravações novas** — são dados que antes não eram registrados, e
+não dá para recuperar depois. Quase todos vêm prontos do TikTok e são copiados
+como estão; a exceção é o selo do clube de fãs, que chega partido em ícone mais
+nome e é remontado aqui — esse fica próximo, não igual.
+
+Escritas que precisam de ligadura para serem lidas direito — árabe, hebraico,
+algumas da Índia — aparecem com as letras soltas e na ordem errada, porque a
+biblioteca de desenho vem sem motor de forma. Latino, cirílico, grego, japonês,
+chinês, coreano, tailandês e os emoji saem certos.
+
+## Créditos
+
+A fonte do chat é a [TikTok Sans](https://fonts.google.com/specimen/TikTok+Sans),
+publicada no Google Fonts sob a licença OFL — é a mesma que o app usa
+(`assets/fonts`, com o texto da licença ao lado).
+
+As figuras de emoji são do projeto [Noto Emoji](https://github.com/googlefonts/noto-emoji)
+do Google, sob a licença Apache 2.0 (o texto vai dentro de `assets/emoji.zip`).
+São as mesmas que o TikTok mostra no Android.

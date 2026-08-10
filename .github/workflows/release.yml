@@ -209,7 +209,28 @@ jobs:
           VERSAO="${GITHUB_REF_NAME}"
 
           cat > notas.md <<'EOF'
-          Grava suas lives do TikTok em MP4 automaticamente, sem pesar no computador.
+          Grava suas lives do TikTok em MP4 automaticamente, sem pesar no computador —
+          e devolve no vídeo o **chat** e as **animações de presente**, que o replay
+          oficial do TikTok não tem.
+
+          ## O que tem de novo
+
+          - **Aba Editar.** Abre a gravação, marca início e fim na linha do tempo e
+            exporta só o trecho. A roda do mouse aproxima até precisão de quadro, e há
+            um ajuste em milissegundos para quando o som sai fora de sincronia com a
+            imagem.
+          - **Replay do chat.** As mensagens são registradas com o instante em que
+            chegaram e redesenhadas por cima do vídeo, na mesma fonte que o app usa.
+          - **Animações de presente.** As oficiais do TikTok, baixadas e compostas no
+            vídeo, mais o cartão com o nome de quem mandou e a contagem.
+          - O registro fica num `.ttgifts` ao lado do MP4, autossuficiente: a versão com
+            chat e presentes pode ser gerada muito tempo depois.
+          - **Resgate de gravações interrompidas** ao abrir o programa, aviso de espaço
+            em disco, registro em arquivo para diagnóstico, cookie cifrado e ícone na
+            bandeja.
+
+          O chat desenhado é uma reconstrução — fica muito parecido, não idêntico.
+          Emotes próprios da live e selos do apelido só aparecem em gravações novas.
 
           ## Baixar
 

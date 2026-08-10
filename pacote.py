@@ -23,7 +23,7 @@ EXTENSAO = ".ttgifts"
 MANIFESTO = "manifesto.json"
 PASTA_ANIM = "animacoes"
 PASTA_FIGURAS = "figuras"
-VERSAO = 2
+VERSAO = 3
 
 # Marca o lugar de um emote dentro do texto da mensagem. Fica gravada assim
 # para a posição continuar certa mesmo que a figura não venha junto.
@@ -46,6 +46,8 @@ class Presente:
     effect_ids: list[int] = field(default_factory=list)
     de: str = ""
     apelido: str = ""
+    avatar: str = ""          # URL da foto do remetente, para o contador
+    icone: str = ""           # URL da figura do presente, para o contador
     hora: str = ""
     # preenchido quando a animação existe no pacote
     animacao: str = ""
@@ -61,6 +63,8 @@ class Presente:
             effect_ids=[int(i) for i in (d.get("effect_ids") or [])],
             de=d.get("de") or "",
             apelido=d.get("apelido") or "",
+            avatar=d.get("avatar") or "",
+            icone=d.get("icone") or "",
             hora=d.get("hora") or "",
             animacao=d.get("animacao") or "",
         )
@@ -261,6 +265,8 @@ def abrir(caminho: str) -> Pacote:
     for pres in p.presentes:
         if pres.animacao and pres.animacao not in guardadas:
             pres.animacao = ""
+        if pres.icone and pres.icone not in figuras:
+            pres.icone = ""
     # o mesmo para as figuras: sem a imagem, a marca no texto viraria um vazio
     for c in p.comentarios:
         if c.emotes:

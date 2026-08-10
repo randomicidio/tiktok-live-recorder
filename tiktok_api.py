@@ -21,12 +21,15 @@ WEB_UA = (
 # TikTok (nao passa por recompressao), por isso vem primeiro.
 QUALITY_ORDER = ["origin", "uhd", "hd", "sd", "ld"]
 
+# Só o nome da faixa, sem adjetivo. "Média (HD)" soava como se o usuário
+# estivesse perdendo alguma coisa, quando na maioria das lives essa é a única
+# faixa que o TikTok entrega.
 QUALITY_LABELS = {
-    "origin": "Original (melhor)",
-    "uhd": "Alta (UHD)",
-    "hd": "Média (HD)",
-    "sd": "Baixa (SD)",
-    "ld": "Mínima (LD)",
+    "origin": "Original",
+    "uhd": "UHD",
+    "hd": "HD",
+    "sd": "SD",
+    "ld": "LD",
 }
 
 # status devolvido em data.user.status
@@ -202,9 +205,16 @@ def resolve(username: str, session: requests.Session | None = None) -> LiveInfo:
     stream_data = ((live_room.get("streamData") or {}).get("pull_data") or {}).get("stream_data")
     info.streams = _parse_stream_data(stream_data)
 
-    # Plano B: webcast/room/info, que tambem cobre casos de perfil privado.
-    if not info.streams and info.room_id not in ("", "0"):
-        info.streams = _fetch_via_webcast(s, info)
+    # O webcast às vezes oferece uma variante maior que não veio no api-live.
+    # Combinar as duas respostas é importante: não basta usar o segundo
+    # endpoint só quando o primeiro falhou, pois ele pode ter trazido apenas
+    # HD enquanto o outro já anuncia origin/UHD.
+    if info.room_id not in ("", "0"):
+        alternativos = _fetch_via_webcast(s, info)
+        for qualidade, opcao in alternativos.items():
+            atual = info.streams.get(qualidade)
+            if atual is None or not atual.best_url:
+                info.streams[qualidade] = opcao
 
     return info
 

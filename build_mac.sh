@@ -51,6 +51,17 @@ if [ -z "$FFMPEG" ]; then
 fi
 echo "ffmpeg:  $FFMPEG"
 
+# O ffprobe e tao obrigatorio quanto o ffmpeg: e ele que informa duracao e
+# resolucao do video, e sem isso o editor nao abre arquivo nenhum.
+FFPROBE="$(command -v ffprobe || true)"
+if [ -z "$FFPROBE" ]; then
+    echo
+    echo "ERRO: ffprobe não encontrado - ele vai embutido junto com o ffmpeg."
+    echo "      Vem no mesmo pacote; se instalou pelo brew, já deveria estar aí."
+    exit 1
+fi
+echo "ffprobe: $FFPROBE"
+
 # Um ffmpeg do Homebrew depende de .dylib que existem só na máquina que o
 # instalou. Funciona aqui, mas quebra ao copiar o app para outro Mac.
 EXTERNAS="$(otool -L "$FFMPEG" 2>/dev/null | tail -n +2 \
@@ -79,7 +90,7 @@ python3 -m venv "$VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 pip install --quiet --upgrade pip
-pip install --quiet pyinstaller requests pillow
+pip install --quiet pyinstaller requests pillow TikTokLive
 echo "dependências instaladas"
 echo
 
@@ -97,7 +108,10 @@ pyinstaller --noconfirm --clean \
     --osx-bundle-identifier "$BUNDLE_ID" \
     --add-data "assets:assets" \
     --add-binary "$FFMPEG:." \
-    --exclude-module PIL \
+    --add-binary "$FFPROBE:." \
+    --collect-all TikTokLive \
+    --exclude-module betterproto.plugin \
+    --hidden-import PIL.ImageTk \
     --exclude-module numpy \
     --exclude-module matplotlib \
     --exclude-module pytest \

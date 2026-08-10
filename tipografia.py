@@ -34,12 +34,13 @@ import resources
 # o resto continua vindo do sistema, exatamente como no app.
 FONTES_EMBUTIDAS = ("TikTokSans.ttf",)
 
-# Ela é variável, e sem escolher os eixos vem no peso mais leve. Os dois valores
-# foram medidos na captura, e é preciso medir os dois juntos: largura e peso se
-# compensam, então uma linha do tamanho certo ainda pode estar fina demais.
-# Com estes, a linha de referência sai com 518 px contra 523 do original, e a
-# espessura do traço bate - o app escreve o chat em Medium, não em Regular.
-VARIACAO = {"Optical size": 16.0, "Weight": 500.0}
+# Ela é variável, e sem escolher os eixos vem no peso mais leve. Os valores
+# saíram da captura de referência: medindo a altura de caixa alta e a espessura
+# do traço numa gravação de tela do app, o texto do chat bate com Medium (500).
+# Pesos maiores engordavam as letras e as deixavam mais largas que o original.
+PESO_TEXTO = 500.0        # chat: apelido e mensagem
+PESO_FORTE = 700.0        # números do contador e selos
+VARIACAO = {"Optical size": 16.0, "Weight": PESO_TEXTO}
 
 FONTES_WINDOWS = FONTES_EMBUTIDAS + (
     "segoeui.ttf",      # latino, cirílico, grego, árabe, hebraico
@@ -104,7 +105,8 @@ def _subtabela(dados: bytes, off: int) -> list[tuple[int, int]]:
         seg2 = struct.unpack_from(">H", dados, off + 6)[0]
         seg = seg2 // 2
         fim_off, ini_off = off + 14, off + 16 + seg2
-        delta_off, faixa_off = off + 16 + seg2 * 2, off + 16 + seg2 * 3
+        # o vetor de deltas fica entre os dois; só o de faixas é consultado aqui
+        faixa_off = off + 16 + seg2 * 3
         for i in range(seg):
             fim = struct.unpack_from(">H", dados, fim_off + i * 2)[0]
             ini = struct.unpack_from(">H", dados, ini_off + i * 2)[0]
@@ -199,7 +201,7 @@ def _cobre(faixas: tuple[tuple[int, int], ...], cp: int) -> bool:
     return False
 
 
-def _ajustar_variacao(fonte) -> None:
+def _ajustar_variacao(fonte, peso: float | None = None) -> None:
     """Fixa os eixos das fontes variáveis. Nas comuns não faz nada."""
     try:
         eixos = fonte.get_variation_axes()
@@ -210,7 +212,7 @@ def _ajustar_variacao(fonte) -> None:
         nome = eixo.get("name", "")
         if isinstance(nome, bytes):
             nome = nome.decode("latin-1", "replace")
-        alvo = VARIACAO.get(nome)
+        alvo = peso if (nome == "Weight" and peso is not None) else VARIACAO.get(nome)
         valores.append(eixo["default"] if alvo is None
                        else max(eixo["minimum"], min(eixo["maximum"], alvo)))
     try:
@@ -312,23 +314,30 @@ def _casar_emoji(texto: str, i: int) -> tuple[str, int]:
 class Pedaco:
     """Um trecho já resolvido: ou texto de uma fonte só, ou uma imagem."""
 
-    __slots__ = ("texto", "fonte", "imagem", "largura")
+    __slots__ = ("texto", "fonte", "imagem", "largura", "assento")
 
-    def __init__(self, texto="", fonte=None, imagem=None, largura=0.0):
+    def __init__(self, texto="", fonte=None, imagem=None, largura=0.0,
+                 assento=0.88):
         self.texto = texto
         self.fonte = fonte
         self.imagem = imagem        # PIL.Image quando é emoji ou emote
         self.largura = largura
+        # Quanto da altura da figura fica acima da linha de base. Emoji descem
+        # um pouco abaixo dela; os selos do apelido, um pouco menos.
+        self.assento = assento
 
 
 class Tipografia:
     """Uma cadeia de fontes num tamanho, capaz de medir e desenhar."""
 
-    def __init__(self, tamanho: int):
+    def __init__(self, tamanho: int, peso: float = PESO_TEXTO):
         from PIL import ImageFont
 
         self.tamanho = max(1, int(tamanho))
-        self.emoji = round(self.tamanho * 1.22)
+        self.peso = float(peso)
+        # Medido na referência: o emoji ocupa pouco mais que a altura de caixa
+        # alta e se apoia na linha de base, não na altura inteira da fonte.
+        self.emoji = round(self.tamanho * 1.10)
         self._font = ImageFont
         self._carregadas: dict[str, object] = {}
         self._caminhos = _arquivos_de_fonte()
@@ -340,19 +349,27 @@ class Tipografia:
         if caminho not in self._carregadas:
             try:
                 fonte = self._font.truetype(caminho, self.tamanho)
-                _ajustar_variacao(fonte)
+                _ajustar_variacao(fonte, self.peso)
             except OSError:
                 fonte = None
             self._carregadas[caminho] = fonte
         return self._carregadas[caminho]
 
     def _para(self, cp: int):
+        """A primeira fonte da cadeia que tem esse caractere, ou None.
+
+        None quer dizer que nenhuma fonte instalada sabe desenhá-lo - tibetano
+        e afins no Windows, por exemplo. Sai melhor omitir o caractere do que
+        encher o apelido de quadradinhos vazios.
+        """
         for caminho in self._caminhos:
             if _cobre(_cobertura(caminho), cp):
                 fonte = self._fonte(caminho)
                 if fonte is not None:
                     return fonte
-        return self.padrao
+        # Máquina sem nenhuma das fontes da cadeia: melhor a de emergência do
+        # Pillow do que devolver o chat vazio.
+        return None if self._caminhos else self.padrao
 
     # ------------------------------------------------------------- montagem
 
@@ -368,7 +385,7 @@ class Tipografia:
         i = 0
 
         def fechar():
-            nonlocal acumulado, fonte_atual
+            nonlocal acumulado
             if acumulado:
                 s = "".join(acumulado)
                 saida.append(Pedaco(s, fonte_atual, largura=fonte_atual.getlength(s)))
@@ -391,10 +408,10 @@ class Tipografia:
                     continue
 
             cp = ord(texto[i])
-            if cp in _ACESSORIOS:
-                i += 1               # sobrou de uma sequência que não casou
+            fonte = None if cp in _ACESSORIOS else self._para(cp)
+            if fonte is None:
+                i += 1               # acessório solto ou escrita sem fonte aqui
                 continue
-            fonte = self._para(cp)
             if fonte is not fonte_atual:
                 fechar()
                 fonte_atual = fonte
@@ -404,17 +421,20 @@ class Tipografia:
         fechar()
         return saida
 
-    def _pedaco_imagem(self, img, altura: int = 0, folga: float = 0.08) -> Pedaco:
+    def _pedaco_imagem(self, img, altura: int = 0, folga: float = 0.04,
+                       assento: float = 0.88) -> Pedaco:
         alt = altura or self.emoji
         larg = max(1, round(img.width * alt / img.height)) if img.height else alt
         if (larg, alt) != img.size:
             from PIL import Image
             img = img.resize((larg, alt), Image.LANCZOS)
-        return Pedaco(imagem=img, largura=larg + self.tamanho * folga)
+        return Pedaco(imagem=img, largura=larg + self.tamanho * folga,
+                      assento=assento)
 
     def selo(self, img) -> Pedaco:
         """Um selo do apelido, na altura da linha e com o vão que o app deixa."""
-        return self._pedaco_imagem(img, altura=round(self.tamanho * 1.05), folga=0.3)
+        return self._pedaco_imagem(img, altura=round(self.tamanho * 0.97),
+                                   folga=0.33, assento=0.79)
 
     # ------------------------------------------------------------- quebra
 
@@ -436,6 +456,38 @@ class Tipografia:
                 linhas[-1].append(parte)
                 usado += parte.largura
         return [l for l in linhas if l] or [[]]
+
+    def recortar(self, texto: str, largura_max: float) -> list[Pedaco]:
+        """Uma linha só, cortada com reticências quando não cabe.
+
+        É o que o cartão de presente do app faz: a pílula tem largura fixa e o
+        nome comprido termina em "…" em vez de empurrar o resto para fora.
+        """
+        pedacos = self.pedacos(texto)
+        if sum(p.largura for p in pedacos) <= largura_max:
+            return pedacos
+
+        fonte = next((p.fonte for p in pedacos if p.fonte is not None), None) \
+            or self.padrao
+        ponto = Pedaco("…", fonte, largura=fonte.getlength("…"))
+        cabe = largura_max - ponto.largura
+        saida, usado = [], 0.0
+        for pedaco in pedacos:
+            if usado + pedaco.largura <= cabe:
+                saida.append(pedaco)
+                usado += pedaco.largura
+                continue
+            if pedaco.fonte is not None:
+                # Corta no meio da palavra mesmo: um apelido comprido de uma
+                # palavra só precisa terminar em algum lugar.
+                for k in range(len(pedaco.texto) - 1, 0, -1):
+                    larg = pedaco.fonte.getlength(pedaco.texto[:k])
+                    if usado + larg <= cabe:
+                        saida.append(Pedaco(pedaco.texto[:k], pedaco.fonte,
+                                            largura=larg))
+                        break
+            break
+        return saida + [ponto]
 
     def _fatias(self, pedaco: Pedaco, largura_max: float) -> list[Pedaco]:
         """Divide um trecho de texto em pontos onde a linha pode quebrar.
@@ -475,7 +527,7 @@ class Tipografia:
             if pedaco.imagem is not None:
                 # A figura desce um pouco abaixo da base, como nas fontes de
                 # emoji - alinhada pelo topo ela pareceria flutuando.
-                topo = round(base - pedaco.imagem.height * 0.82)
+                topo = round(base - pedaco.imagem.height * pedaco.assento)
                 img.paste(pedaco.imagem, (round(x), topo), pedaco.imagem)
             elif pedaco.texto:
                 # `embedded_color` só muda algo nas fontes que trazem a cor

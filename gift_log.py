@@ -16,10 +16,11 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import effects_api
 import pacote
@@ -42,6 +43,35 @@ try:
     from TikTokLive.events import EmoteChatEvent
 except ImportError:  # pragma: no cover
     EmoteChatEvent = None
+
+
+# Atalhos que o cliente do TikTok às vezes envia como texto puro. Quando o
+# websocket traz a imagem oficial, ela é sempre preferida; esta lista só evita
+# que códigos sem metadados como "[heart]" ou "[rosiecute]" apareçam crus no
+# vídeo. São equivalentes Unicode, não cópias das artes proprietárias.
+_EMOJIS_DE_ATALHO = {
+    "smile": "🙂", "happy": "😄", "angry": "😠", "cry": "😢",
+    "embarrassed": "😳", "surprised": "😮", "wronged": "🥺", "shout": "😱",
+    "flushed": "😳", "yummy": "😋", "complacent": "😌", "drool": "🤤",
+    "scream": "😱", "weep": "😭", "speechless": "😶", "funnyface": "😜",
+    "laughwithtears": "😂", "laughcry": "😂", "wicked": "😈",
+    "facewithrollingeyes": "🙄", "sulk": "😞", "thinking": "🤔",
+    "think": "🤔", "lovely": "🥰", "greedy": "🤑", "wow": "😮",
+    "joyful": "😁", "hehe": "😏", "slap": "👋", "tears": "😭",
+    "stun": "😵", "cute": "😍", "blink": "😉", "disdain": "😒",
+    "astonish": "😲", "rage": "🤬", "cool": "😎", "excited": "🤩",
+    "proud": "😌", "smileface": "😊", "evil": "😈", "angel": "😇",
+    "laugh": "😂", "pride": "😤", "nap": "😴", "loveface": "😍",
+    "awkward": "😅", "shock": "😱", "heart": "❤️", "love": "❤️",
+    # Pacotes mais novos de personagens do TikTok.
+    "rockyserious": "😐", "rockyloveit": "😍", "rockyproud": "😤",
+    "rockycool": "😎", "rosiedislike": "😒", "rosiekisskiss": "😘",
+    "rosieawkward": "😅", "rosiecute": "🥰", "jolliekissingface": "😘",
+    "jolliewow": "😮", "jolliesatisfied": "😌", "jolliespeechless": "😶",
+    "sagethink": "🤔", "sagefulfilled": "😌", "sageclever": "🧐",
+    "sagemoney": "🤑",
+}
+_ATALHO_TIKTOK = re.compile(r"\[([a-z0-9_]+)\]", re.IGNORECASE)
 
 
 def _num(valor, padrao=0):
@@ -90,6 +120,29 @@ def _figura_do_emote(modelo) -> tuple[str, str]:
         # Alguns não vêm com id; a própria URL identifica bem o suficiente.
         ident = hashlib.md5(url.encode("utf-8")).hexdigest()[:16]
     return ident, url
+
+
+def _emotes_do_evento(event, so_emotes: bool = False):
+    """Lê os emotes que o TikTok mandou, tolerando nomes de campos novos.
+
+    O protocolo do TikTok muda com frequência. Comentários normais trazem os
+    emotes indexados em ``f315_emotes`` hoje, enquanto mensagens só de emote
+    usam ``emote_list``. Procurar as duas formas mantém a gravação compatível
+    quando a biblioteca expõe uma delas com outro nome.
+    """
+    campos = (("emote_list", "emotes", "f315_emotes") if so_emotes
+              else ("f315_emotes", "emote_list", "emotes"))
+    for campo in campos:
+        itens = getattr(event, campo, None)
+        if itens:
+            return itens
+    return []
+
+
+def _traduzir_atalhos_tiktok(texto: str) -> str:
+    """Converte somente os atalhos conhecidos que vieram sem imagem."""
+    return _ATALHO_TIKTOK.sub(
+        lambda m: _EMOJIS_DE_ATALHO.get(m.group(1).lower(), m.group(0)), texto)
 
 
 def _imagem(modelo) -> str:
@@ -247,12 +300,24 @@ def _com_emotes(texto: str, marcados) -> tuple[str, dict[str, str], dict[str, di
                          n, ident))
         receitas[ident] = {"url": url}
 
-    # De trás para a frente: inserir no fim não desloca o que vem antes. A
+    # De trás para a frente: alterar o fim não desloca o que vem antes. A
     # ordem original desempata, senão emotes na mesma posição sairiam trocados.
     posicoes = {}
     for pos, _n, ident in sorted(entradas, key=lambda e: (-e[0], -e[1])):
-        texto = texto[:pos] + pacote.MARCA_EMOTE + texto[pos:]
-        posicoes = {p + 1 if p >= pos else p: i for p, i in posicoes.items()}
+        # Alguns clientes enviam o atalho literal (por exemplo [rosiecute])
+        # junto do índice e da imagem. Nesse caso a marca substitui o atalho;
+        # inserir antes dele era o que deixava o texto entre colchetes visível
+        # no chat exportado.
+        fim = texto.find("]", pos, min(len(texto), pos + 96))
+        if pos < len(texto) and texto[pos:pos + 1] == "[" and fim >= pos:
+            removidos = fim + 1 - pos
+            texto = texto[:pos] + pacote.MARCA_EMOTE + texto[fim + 1:]
+            deslocamento = 1 - removidos
+            posicoes = {p + deslocamento if p >= fim + 1 else p: i
+                         for p, i in posicoes.items()}
+        else:
+            texto = texto[:pos] + pacote.MARCA_EMOTE + texto[pos:]
+            posicoes = {p + 1 if p >= pos else p: i for p, i in posicoes.items()}
         posicoes[pos] = ident
     return texto, {str(p): i for p, i in posicoes.items()}, receitas
 
@@ -405,8 +470,29 @@ class GiftLogger:
 
     # ------------------------------------------------------------- anotar
 
+    def _anexar(self, linha: dict) -> bool:
+        """Grava uma linha no .jsonl na hora, com flush.
+
+        O arquivo e a unica copia que sobrevive a uma queda de energia: o
+        pacote so e montado no fim. Por isso cada linha vai para o disco assim
+        que acontece, em vez de esperar um buffer encher.
+        """
+        try:
+            with open(self.caminho_jsonl, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(linha, ensure_ascii=False) + "\n")
+                fh.flush()
+            return True
+        except OSError:
+            return False
+
     def _anotar(self, event) -> None:
         gift = event.gift
+        usuario = getattr(event, "user", None) or getattr(event, "user_info", None)
+        foto = getattr(usuario, "avatar_thumb", None)
+        urls = getattr(foto, "url_list", None) or getattr(foto, "m_urls", None) or []
+        figura = getattr(gift, "image", None) or getattr(gift, "icon", None)
+        icones = (getattr(figura, "url_list", None)
+                  or getattr(figura, "m_urls", None) or [])
         agora = datetime.now()
         segundos = (agora - self.inicio).total_seconds() if self.inicio else 0.0
 
@@ -418,8 +504,10 @@ class GiftLogger:
             "diamantes": _num(getattr(gift, "diamond_count", 0)),
             "quantidade": _num(getattr(event, "repeat_count", 1), 1),
             "effect_ids": _ids_de_efeito(gift),
-            "de": getattr(getattr(event, "user", None), "unique_id", "") or "",
-            "apelido": getattr(getattr(event, "user", None), "nickname", "") or "",
+            "de": getattr(usuario, "unique_id", "") or "",
+            "apelido": getattr(usuario, "nickname", "") or "",
+            "avatar": urls[0] if urls else "",
+            "icone": icones[0] if icones else "",
         }
 
         with self._lock:
@@ -428,13 +516,8 @@ class GiftLogger:
 
         # Uma linha por presente, gravada na hora: se faltar luz, o que ja
         # aconteceu esta salvo.
-        try:
-            with open(self.caminho_jsonl, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"tipo": "presente", **registro},
-                                    ensure_ascii=False) + "\n")
-                fh.flush()
-        except OSError as e:
-            self.emit("log", f"Não consegui gravar o registro: {e}")
+        if not self._anexar({"tipo": "presente", **registro}):
+            self.emit("log", "Não consegui gravar o registro deste presente.")
 
         self.emit("log", f"[presente {n}] {registro['apelido']} → "
                          f"{registro['nome']} x{registro['quantidade']} "
@@ -453,15 +536,23 @@ class GiftLogger:
 
         # Emotes próprios da live: dentro do texto num comentário comum, ou
         # sozinhos quando a mensagem inteira é um emote.
-        marcados = (getattr(event, "emote_list", None) if so_emotes
-                    else getattr(event, "f315_emotes", None))
+        marcados = _emotes_do_evento(event, so_emotes)
         texto, posicoes, achados = _com_emotes(
             "" if so_emotes else (getattr(event, "comment", "") or ""), marcados)
+        # Só sobra aqui o que o TikTok enviou sem modelo/imagem estruturada.
+        texto = _traduzir_atalhos_tiktok(texto)
         esquerda, direita, selos = _selos_do_usuario(usuario)
         if achados or selos:
             with self._lock:
-                self._figuras.update(achados)
-                self._figuras.update(selos)
+                novas = {c: r for c, r in {**achados, **selos}.items()
+                         if c not in self._figuras}
+                self._figuras.update(novas)
+            # As receitas viviam so na memoria, e uma queda de luz levava junto
+            # os emotes e os selos de todo o chat - o texto se recuperava pelo
+            # .jsonl, as figuras nao. Uma linha por receita nova (nao por
+            # mensagem) resolve: sao poucas dezenas numa live inteira.
+            for chave, receita in novas.items():
+                self._anexar({"tipo": "figura", "chave": chave, "receita": receita})
 
         # O evento não traz hora própria (só um `screen_time` zerado), então o
         # instante é o da chegada. Logo após conectar vem a fila acumulada:
@@ -487,13 +578,8 @@ class GiftLogger:
         with self._lock:
             self._comentarios.append(registro)
 
-        try:
-            with open(self.caminho_jsonl, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"tipo": "chat", **registro},
-                                    ensure_ascii=False) + "\n")
-                fh.flush()
-        except OSError:
-            pass          # perder um comentário não pode derrubar a gravação
+        # Perder um comentário não pode derrubar a gravação: sem aviso aqui.
+        self._anexar({"tipo": "chat", **registro})
 
     # ----------------------------------------------------------- finalizar
 
@@ -513,6 +599,7 @@ class GiftLogger:
         self.emit("status", ("finalizando", "Guardando as animações..."))
         animacoes = self._reunir_animacoes(eventos) if eventos else {}
         figuras = self._reunir_figuras(receitas)
+        figuras.update(self._reunir_icones_presentes(eventos))
 
         try:
             caminho = pacote.criar(
@@ -574,6 +661,32 @@ class GiftLogger:
             self.emit("log", f"Figuras do chat: {len(achados)} de {len(receitas)}.")
         return achados
 
+    def _reunir_icones_presentes(self, eventos: list[dict]) -> dict[str, bytes]:
+        """Guarda a imagem oficial de cada presente para o contador futuro."""
+        import requests
+
+        achados = {}
+        por_url: dict[str, str] = {}
+        for n, evento in enumerate(eventos):
+            url = evento.get("icone") or ""
+            if not url:
+                continue
+            if url in por_url:
+                evento["icone"] = por_url[url]
+                continue
+            ident = f"presente-{n}"
+            try:
+                r = requests.get(url, timeout=20)
+                if r.status_code == 200 and r.content:
+                    achados[ident] = r.content
+                    por_url[url] = ident
+                    evento["icone"] = ident
+                    continue
+            except requests.RequestException:
+                pass
+            evento["icone"] = ""
+        return achados
+
     def _reunir_animacoes(self, eventos: list[dict]) -> dict[str, str]:
         """Resolve e baixa a animação de cada presente. Anota qual ficou em cada um."""
         ids = []
@@ -615,3 +728,81 @@ class GiftLogger:
             self.emit("log", f"{sem} presente(s) sem animação de tela (normal para "
                              f"os pequenos).")
         return pastas
+
+
+# ------------------------------------------------------------------- resgate
+
+def ler_jsonl(caminho: str) -> tuple[list[dict], list[dict], dict[str, dict]]:
+    """Relê um registro cru: (presentes, comentários, receitas de figuras).
+
+    Linhas quebradas são puladas em silêncio - uma queda de energia costuma
+    cortar a última no meio, e perder um comentário não pode custar o resto.
+    """
+    presentes: list[dict] = []
+    comentarios: list[dict] = []
+    figuras: dict[str, dict] = {}
+    try:
+        with open(caminho, encoding="utf-8") as fh:
+            for linha in fh:
+                linha = linha.strip()
+                if not linha:
+                    continue
+                try:
+                    dado = json.loads(linha)
+                except ValueError:
+                    continue
+                tipo = dado.pop("tipo", "")
+                if tipo == "presente":
+                    presentes.append(dado)
+                elif tipo == "chat":
+                    comentarios.append(dado)
+                elif tipo == "figura" and dado.get("chave"):
+                    figuras[dado["chave"]] = dado.get("receita") or {}
+    except OSError:
+        return [], [], {}
+    return presentes, comentarios, figuras
+
+
+def recuperar(jsonl: str, video: str, emit) -> str:
+    """Monta o .ttgifts de uma gravação que não chegou a fechar.
+
+    Reusa o `finalizar()` do caminho normal: é ele que baixa as animações e as
+    figuras, e é justamente esse download que a queda de energia impediu. Por
+    isso o resgate corre contra o relógio - as URLs do CDN expiram em horas.
+    """
+    presentes, comentarios, figuras = ler_jsonl(jsonl)
+    if not presentes and not comentarios:
+        return ""
+
+    logger = GiftLogger(emit)
+    base = jsonl[: -len("_presentes.jsonl")] if jsonl.endswith("_presentes.jsonl") \
+        else os.path.splitext(jsonl)[0]
+    logger.caminho_jsonl = jsonl
+    logger.caminho_pacote = base + pacote.EXTENSAO
+    logger._temp_animacoes = base + "_anim_tmp"
+    logger.video = video
+    logger.username = os.path.basename(base).split("_")[0]
+    logger._eventos = presentes
+    logger._comentarios = comentarios
+    logger._figuras = figuras
+
+    # O instante zero vem da primeira linha gravada: os `t` de cada evento são
+    # relativos a ele, então o que importa aqui é só registrar a data no
+    # manifesto - a sincronia já está nos próprios `t`.
+    for linha in (presentes + comentarios):
+        try:
+            logger.inicio = datetime.fromisoformat(linha["hora"]) - \
+                timedelta(seconds=float(linha.get("t") or 0))
+            break
+        except (KeyError, ValueError):
+            continue
+
+    if not figuras and comentarios:
+        # Gravações anteriores a esta versão não guardavam as receitas.
+        perdidas = sum(1 for c in comentarios if c.get("emotes") or c.get("selos")
+                       or c.get("selos_direita"))
+        if perdidas:
+            emit("log", f"{perdidas} mensagem(ns) tinham emotes ou selos que este "
+                        f"registro não guardou; o texto vem inteiro, as figuras não.")
+
+    return logger.finalizar()

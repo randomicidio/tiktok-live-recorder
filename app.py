@@ -1,7 +1,7 @@
 """TikTok Replay Downloader - interface grafica.
 
 Uma tela so: informe a conta, aperte REC e pronto. O programa fica de olho e
-grava a live inteira em MP4 assim que ela comeca, sem recodificar nada.
+grava a live inteira em MP4 assim que ela comeca, sem recodificar o video.
 
 Nao ha escolha de qualidade nem de FPS de proposito: a variante `origin` do
 TikTok e o seu proprio video sem recompressao, entao gravar ela ja significa a
@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import os
 import queue
-import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -36,7 +35,11 @@ DEFAULTS = {
     "outdir": resources.default_output_dir(),
     "poll_seconds": 30,
     "keep_waiting": True,
+    "auto_rec": False,
     "registrar_presentes": True,
+    "preview_live": True,
+    "preview_audio": False,
+    "preview_volume": 50,
     "cookie": "",
 }
 
@@ -53,9 +56,11 @@ PALETTE = {
         "fg": "#92400e", "bg": "#fef3c7", "dot": "#f59e0b",
         "border": "#fcd34d", "prefix": "Aguardando - ",
     },
+    # Verde-esmeralda: fica proximo do verde de "concluido" sem ser o mesmo,
+    # e os dois nunca disputam a barra ao mesmo tempo.
     "aovivo": {
-        "fg": "#9a3412", "bg": "#ffedd5", "dot": "#f97316",
-        "border": "#fdba74", "prefix": "Ao vivo - ",
+        "fg": "#065f46", "bg": "#d1fae5", "dot": "#10b981",
+        "border": "#6ee7b7", "prefix": "Ao vivo - ",
     },
     "gravando": {
         "fg": "#b91c1c", "bg": "#fee2e2", "dot": "#dc2626",
@@ -99,29 +104,10 @@ def save_config(cfg: dict) -> None:
         pass
 
 
-def open_path(path: str) -> None:
-    """Abre o arquivo ou a pasta no programa padrao do sistema."""
-    if not os.path.exists(path):
-        return
-    if resources.IS_WINDOWS:
-        os.startfile(path)  # noqa: S606
-    elif resources.IS_MAC:
-        subprocess.Popen(["open", path])
-    else:
-        subprocess.Popen(["xdg-open", path])
-
-
-def reveal_in_explorer(path: str) -> None:
-    """Mostra o arquivo ja selecionado no gerenciador de arquivos."""
-    if not os.path.exists(path):
-        return
-    if resources.IS_WINDOWS:
-        # O explorer devolve codigo 1 mesmo dando certo; nao ha o que checar.
-        subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
-    elif resources.IS_MAC:
-        subprocess.Popen(["open", "-R", path])   # -R revela no Finder
-    else:
-        open_path(os.path.dirname(path))
+# Passaram para `resources` quando o editor tambem precisou delas; os nomes
+# ficam aqui porque a aba do gravador ja os usa em varios lugares.
+open_path = resources.open_path
+reveal_in_explorer = resources.reveal_in_explorer
 
 
 def formata_tamanho(num_bytes: int) -> str:
@@ -145,8 +131,8 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("700x620")
-        self.minsize(640, 560)
+        self.geometry("1000x700")
+        self.minsize(650, 500)
         self.configure(bg="#ffffff")
 
         self.cfg = load_config()
@@ -159,12 +145,23 @@ class App(tk.Tk):
         self._state_key = "parado"
         self._blink_on = False
         self._disarming = False
+        self._preview_url = ""
+        self._preview_carregada = ""
+        self.preview_player = None
 
         self._build_ui()
+        self.bind("<Configure>", self._janela_redimensionada, add="+")
+        self.after(180, self._ajustar_preview)
         self._check_dependencies()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(120, self._drain)
         self.after(550, self._pulse)
+        # Depois do _drain: assim o "Pronto." das dependencias ja esta no
+        # registro quando o REC automatico anuncia que se armou.
+        self.after(400, self._auto_armar)
+        # A varredura sai de imediato, mas em thread: nao atrasa nem a janela
+        # nem o REC automatico acima.
+        self._procurar_interrompidas()
 
     # ------------------------------------------------------------------ UI
 
@@ -205,7 +202,11 @@ class App(tk.Tk):
         self._set_window_icon()
         self._build_header(self)
 
-        self.abas = ttk.Notebook(self)
+        # `takefocus=False`: clicar numa aba deixaria o foco no proprio
+        # Notebook, e ai as setas trocariam de aba. No editor elas sao do
+        # playhead, entao o Notebook sai da roda do foco. Continua tudo
+        # acessivel pelo mouse, que e como as abas sao usadas.
+        self.abas = ttk.Notebook(self, takefocus=False)
         self.abas.pack(fill="both", expand=True, padx=10, pady=(6, 0))
 
         main = ttk.Frame(self.abas, padding=18)
@@ -214,8 +215,16 @@ class App(tk.Tk):
         self.editor = editor.Editor(self.abas,
                                     lambda k, v="": self.events.put((k, v)))
         self.abas.add(self.editor, text="  Editar  ")
+        # O clique na aba foca o proprio Notebook mesmo com takefocus desligado,
+        # entao o foco e devolvido ao editor depois que o clique termina - dai o
+        # after_idle. O segundo bind cobre reclicar na aba ja aberta, que nao
+        # dispara TabChanged.
+        self.abas.bind("<<NotebookTabChanged>>", self._aba_mudou, add="+")
+        self.abas.bind("<Button-1>", lambda _e: self.after_idle(self._aba_mudou),
+                       add="+")
         main.columnconfigure(1, weight=1)
-        main.rowconfigure(7, weight=1)
+        main.columnconfigure(2, weight=1, minsize=150)
+        main.rowconfigure(8, weight=1)
 
         rotulo = {"font": ("Segoe UI", 10)}
 
@@ -252,6 +261,13 @@ class App(tk.Tk):
             text="Continuar aguardando as próximas lives depois que uma terminar",
             variable=self.keep_var,
         ).pack(anchor="w")
+
+        self.auto_rec_var = tk.BooleanVar(value=bool(self.cfg["auto_rec"]))
+        ttk.Checkbutton(
+            opcoes,
+            text="Armar o REC sozinho ao abrir o programa (não preciso clicar em nada)",
+            variable=self.auto_rec_var,
+        ).pack(anchor="w", pady=(4, 0))
 
         self.presentes_var = tk.BooleanVar(value=bool(self.cfg["registrar_presentes"]))
         ttk.Checkbutton(
@@ -330,9 +346,39 @@ class App(tk.Tk):
         )
         self.detail_label.pack(side="right")
 
+        # --- prévia ao vivo ------------------------------------------------
+        self.preview_box = ttk.LabelFrame(main, text=" Prévia ao vivo ", padding=7)
+        self.preview_box.grid(row=0, column=2, rowspan=9, sticky="nsew", padx=(18, 0))
+        self.preview_box.columnconfigure(0, weight=1)
+        # A reserva continua em 9:16, mas acompanha o espaço disponível.
+        # Assim ela cresce junto com a janela e encolhe antes de esconder
+        # campos do gravador.
+        self.preview_tela = tk.Frame(self.preview_box, bg="#0b0b0b", width=250, height=444)
+        self.preview_tela.grid(row=0, column=0, sticky="n")
+        self.preview_tela.grid_propagate(False)
+        lado_preview = ttk.Frame(self.preview_box)
+        lado_preview.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        ttk.Label(lado_preview, text="A prévia não altera o arquivo salvo.",
+                  wraplength=250).pack(anchor="w")
+        self.preview_audio_var = tk.BooleanVar(value=bool(self.cfg["preview_audio"]))
+        self.preview_var = tk.BooleanVar(value=bool(self.cfg["preview_live"]))
+        ttk.Checkbutton(lado_preview, text="Exibir prévia ao vivo", variable=self.preview_var,
+                        command=self._preview_mudou).pack(anchor="w", pady=(8, 2))
+        ttk.Checkbutton(lado_preview, text="Ouvir áudio", variable=self.preview_audio_var,
+                        command=self._preview_audio_mudou).pack(anchor="w", pady=(10, 2))
+        volume_linha = ttk.Frame(lado_preview)
+        volume_linha.pack(anchor="w", fill="x")
+        ttk.Label(volume_linha, text="Volume").pack(side="left")
+        self.preview_volume_var = tk.DoubleVar(value=float(self.cfg["preview_volume"]))
+        ttk.Scale(volume_linha, from_=0, to=100, orient="horizontal", length=150,
+                  variable=self.preview_volume_var,
+                  command=lambda _v: self._preview_audio_mudou()).pack(side="left", padx=8)
+        self.preview_info_var = tk.StringVar(value="Aguardando uma gravação")
+        ttk.Label(lado_preview, textvariable=self.preview_info_var,
+                  foreground="#64748b").pack(anchor="w", pady=(10, 0))
         # --- registro ------------------------------------------------------
         registro = ttk.LabelFrame(main, text=" Registro ", padding=6)
-        registro.grid(row=7, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+        registro.grid(row=8, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         registro.rowconfigure(0, weight=1)
         registro.columnconfigure(0, weight=1)
         self.log = tk.Text(
@@ -346,6 +392,27 @@ class App(tk.Tk):
         scroll.grid(row=0, column=1, sticky="ns")
 
         self._apply_state("parado", "Parado")
+
+    def _janela_redimensionada(self, _event=None) -> None:
+        """Agrupa muitos eventos de resize numa única atualização do player."""
+        if getattr(self, "_resize_preview_id", None):
+            self.after_cancel(self._resize_preview_id)
+        self._resize_preview_id = self.after(80, self._ajustar_preview)
+
+    def _ajustar_preview(self) -> None:
+        self._resize_preview_id = None
+        if not hasattr(self, "preview_box") or self.preview_box.winfo_width() < 20:
+            return
+        margem = 20
+        largura_disponivel = max(130, self.preview_box.winfo_width() - margem)
+        # Reserva os controles abaixo do vídeo e a moldura do painel.
+        altura_disponivel = max(180, self.preview_box.winfo_height() - 150)
+        largura = min(largura_disponivel, round(altura_disponivel * 9 / 16))
+        largura = max(130, largura)
+        altura = round(largura * 16 / 9)
+        if (abs(self.preview_tela.winfo_width() - largura) > 2 or
+                abs(self.preview_tela.winfo_height() - altura) > 2):
+            self.preview_tela.configure(width=largura, height=altura)
 
     # ------------------------------------------------------- estado visual
 
@@ -502,6 +569,96 @@ class App(tk.Tk):
         self.log.see("end")
         self.log.configure(state="disabled")
 
+    # -------------------------------------------------------- resgate
+
+    def _procurar_interrompidas(self) -> None:
+        """Varre a pasta de saída atrás de gravações que ficaram pela metade.
+
+        Roda em thread e fala pela fila de eventos, como o gravador: a
+        varredura em si custa décimos de milissegundo, mas o primeiro ffprobe
+        do resgate custa meio segundo (o binário vem de dentro do .exe), e o
+        `__init__` não pode esperar por isso - o REC automático dispara logo
+        depois. O cartão chega meio segundo após a janela abrir, o que para um
+        aviso discreto é indiferente.
+        """
+        # A pasta e lida aqui, na thread da interface: uma StringVar do Tk nao
+        # pode ser tocada de fora dela.
+        pasta = self.outdir_var.get().strip()
+
+        def varrer() -> None:
+            try:
+                achadas = recorder.procurar_interrompidas(pasta)
+            except Exception as e:                   # noqa: BLE001
+                self.events.put(("log", f"Não consegui procurar gravações "
+                                        f"interrompidas: {e}"))
+                return
+            if achadas:
+                self.events.put(("interrompidas", achadas))
+
+        threading.Thread(target=varrer, daemon=True).start()
+
+    def _card_resgate(self, item: recorder.Interrompida) -> None:
+        """Cartão discreto: se a pessoa ignorar, ele volta na próxima abertura."""
+        card = tk.Frame(self.log, bg="#fef9c3", highlightthickness=1,
+                        highlightbackground="#fde047", bd=0)
+        info = tk.Frame(card, bg="#fef9c3")
+        info.pack(side="left", fill="both", expand=True, padx=12, pady=10)
+
+        tk.Label(info, text="Gravação interrompida", bg="#fef9c3", fg="#713f12",
+                 font=("Segoe UI", 9, "bold"), anchor="w").pack(anchor="w")
+        tk.Label(info, text=item.base, bg="#fef9c3", fg="#0f172a",
+                 font=("Segoe UI", 9), anchor="w", justify="left",
+                 wraplength=330).pack(anchor="w", pady=(2, 0))
+
+        # Sem duração: ela custaria um ffprobe, e um .ts cortado pela queda de
+        # luz é justamente o caso em que ele responde 0 (ver compositor.duracao).
+        partes: list[str] = []
+        if item.quando:
+            partes.append(f"{item.quando:%d/%m às %H:%M}")
+        if item.bytes_total:
+            partes.append(formata_tamanho(item.bytes_total))
+        if len(item.partes) > 1:
+            partes.append(f"{len(item.partes)} partes")
+        if item.jsonl:
+            partes.append("presentes e chat")
+        tk.Label(info, text="   ·   ".join(partes), bg="#fef9c3", fg="#854d0e",
+                 font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 6))
+
+        botao = tk.Button(
+            info, text="Recuperar", font=("Segoe UI", 9), bg="#facc15",
+            fg="#422006", bd=1, padx=12, pady=3, cursor="hand2",
+        )
+        botao.configure(command=lambda: self._resgatar(item, botao))
+        botao.pack(anchor="w")
+
+        self.log.configure(state="normal")
+        self.log.insert("end", "\n")
+        self.log.window_create("end", window=card)
+        self.log.insert("end", "\n\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def _resgatar(self, item: recorder.Interrompida, botao: tk.Button) -> None:
+        if self.recorder.recording:
+            messagebox.showinfo(
+                "Gravação em andamento",
+                "Há uma live sendo gravada agora. O resgate disputaria disco e "
+                "processador com ela - tente de novo quando terminar.")
+            return
+        botao.configure(state="disabled", text="Recuperando...")
+
+        def trabalhar() -> None:
+            emit = lambda k, v="": self.events.put((k, v))    # noqa: E731
+            try:
+                resultado = recorder.recuperar(item, emit)
+            except Exception as e:                   # noqa: BLE001
+                self.events.put(("log", f"O resgate falhou: {e}"))
+                self.events.put(("resgatou", recorder.SessionResult()))
+                return
+            self.events.put(("resgatou", resultado))
+
+        threading.Thread(target=trabalhar, daemon=True).start()
+
     # -------------------------------------------------------------- helpers
 
     def _abrir_no_editor(self, caminho: str) -> None:
@@ -512,6 +669,9 @@ class App(tk.Tk):
     def _check_dependencies(self) -> None:
         if not recorder.find_ffmpeg():
             self._log("AVISO: ffmpeg não encontrado no PATH - a gravação não vai funcionar.")
+        if editor.compositor.sem_ffprobe():
+            self._log("AVISO: ffprobe não encontrado - o editor não consegue ler a "
+                      "duração nem a resolução dos vídeos.")
         if editor._acha_libmpv():
             self._log("Prévia do editor: disponível.")
         else:
@@ -544,12 +704,77 @@ class App(tk.Tk):
                 "outdir": self.outdir_var.get().strip(),
                 "poll_seconds": int(self.poll_var.get()),
                 "keep_waiting": bool(self.keep_var.get()),
+                "auto_rec": bool(self.auto_rec_var.get()),
                 "registrar_presentes": bool(self.presentes_var.get()),
+                "preview_live": bool(self.preview_var.get()),
+                "preview_audio": bool(self.preview_audio_var.get()),
+                "preview_volume": float(self.preview_volume_var.get()),
             }
         )
         save_config(self.cfg)
 
+    # --------------------------------------------------------- prévia live
+
+    def _preview_mudou(self) -> None:
+        """Liga/desliga a reprodução extra sem tocar no espaço reservado."""
+        if self.preview_var.get():
+            self.preview_box.update_idletasks()
+            if self.preview_player is None:
+                self.preview_player = editor.Player(self.preview_tela)
+                if not self.preview_player.disponivel:
+                    self._log(f"Prévia ao vivo: {self.preview_player.erro}")
+                    self.preview_info_var.set("Prévia indisponível neste computador")
+                    self.preview_player = None
+                    self.preview_var.set(False)
+                    return
+            self._preview_audio_mudou()
+            if self._preview_url:
+                self._preview_stream(self._preview_url)
+            else:
+                self.preview_info_var.set("Aguardando uma gravação")
+        else:
+            if self.preview_player is not None:
+                self.preview_player.parar()
+            self._preview_carregada = ""
+            self.preview_info_var.set("Prévia desligada")
+
+    def _preview_audio_mudou(self) -> None:
+        if self.preview_player is not None:
+            self.preview_player.audio(bool(self.preview_audio_var.get()),
+                                      self.preview_volume_var.get())
+
+    def _preview_stream(self, url: str) -> None:
+        self._preview_url = url
+        if not url:
+            if self.preview_player is not None:
+                self.preview_player.parar()
+            self._preview_carregada = ""
+            if self.preview_var.get():
+                self.preview_info_var.set("Aguardando uma gravação")
+            return
+        if not self.preview_var.get():
+            return
+        if self.preview_player is None:
+            self._preview_mudou()
+        if self.preview_player is None or url == self._preview_carregada:
+            return
+        self.preview_info_var.set("Ao vivo — áudio desligado" if not self.preview_audio_var.get()
+                                  else "Ao vivo — áudio ligado")
+        self.preview_player.carregar(url)
+        self.preview_player.audio(bool(self.preview_audio_var.get()),
+                                  self.preview_volume_var.get())
+        self.preview_player.tocar(True)
+        self._preview_carregada = url
+
     # --------------------------------------------------------------- acoes
+
+    def _aba_mudou(self, _evt=None) -> None:
+        """Na aba do editor o teclado é do playhead, não da navegação."""
+        try:
+            if self.abas.select() == str(self.editor):
+                self.after_idle(self.editor.assumir_foco)
+        except tk.TclError:
+            pass
 
     def _check_now(self) -> None:
         user = self.user_var.get().strip().lstrip("@")
@@ -578,9 +803,19 @@ class App(tk.Tk):
 
         opcao = info.pick("origin")
         if opcao:
-            extra = ("" if opcao.quality == "origin"
-                     else "  (a original não está sendo oferecida nesta live)")
-            self._log(f"Melhor qualidade disponível: {opcao.label}{extra}")
+            self._log(f"Qualidade: {opcao.label}")
+
+        # Verificar agora também pode servir para assistir à prévia, sem armar
+        # REC. Durante a gravação quem manda é o Recorder, que reenvia a URL
+        # se precisar reconectar.
+        #
+        # Guardamos a URL mesmo com a prévia desligada: quem marca a caixa
+        # depois de verificar espera ver a live que acabou de ser encontrada, e
+        # `_preview_stream` sozinho ja decide se toca ou so anota.
+        if info.is_live and opcao:
+            self._preview_stream(opcao.best_url)
+        elif not info.is_live and not self.recorder.recording:
+            self._preview_stream("")
 
         # Uma verificacao manual nao pode atropelar o estado de quem ja esta
         # gravando ou armado.
@@ -595,16 +830,21 @@ class App(tk.Tk):
         else:
             self._start()
 
-    def _start(self) -> None:
+    def _start(self, automatico: bool = False) -> None:
+        """Arma o REC. Em `automatico` nada bloqueia a tela: quem ligou a opcao
+        nem esta olhando o programa, entao um dialogo modal so serviria para
+        segurar a gravacao ate alguem aparecer para clicar em OK."""
         user = self.user_var.get().strip().lstrip("@")
         if not user:
-            messagebox.showinfo("Falta o usuário", "Digite o seu @ do TikTok.")
+            self._falha_ao_armar(automatico, "Falta o usuário",
+                                 "Digite o seu @ do TikTok.")
             return
         outdir = self.outdir_var.get().strip() or DEFAULTS["outdir"]
         try:
             os.makedirs(outdir, exist_ok=True)
         except OSError as e:
-            messagebox.showerror("Pasta inválida", f"Não consegui usar essa pasta:\n{e}")
+            self._falha_ao_armar(automatico, "Pasta inválida",
+                                 f"Não consegui usar essa pasta:\n{e}", erro=True)
             return
 
         self._persist()
@@ -619,6 +859,23 @@ class App(tk.Tk):
             wait_for_live=bool(self.keep_var.get()),
         )
         self._sync_buttons()
+
+    def _falha_ao_armar(self, automatico: bool, titulo: str, msg: str,
+                        erro: bool = False) -> None:
+        if automatico:
+            self._log(f"{titulo}: {msg} — o REC automático não foi armado.")
+            self._apply_state("erro", titulo)
+        elif erro:
+            messagebox.showerror(titulo, msg)
+        else:
+            messagebox.showinfo(titulo, msg)
+
+    def _auto_armar(self) -> None:
+        """Liga o REC assim que a janela abre, se a opcao estiver marcada."""
+        if not self.auto_rec_var.get() or self.recorder.active:
+            return
+        self._log("REC automático ligado: armando sozinho ao abrir.")
+        self._start(automatico=True)
 
     def _disarm(self) -> None:
         """Cancela a espera sem gravar nada (so vale antes da live comecar)."""
@@ -654,11 +911,40 @@ class App(tk.Tk):
                     messagebox.showerror("Erro", str(value))
                 elif kind == "info":
                     self._apply_info(value)
+                elif kind == "preview":
+                    self._preview_stream(str(value))
                 elif kind == "done":
                     if getattr(value, "final_path", ""):
                         self._apply_state("concluido", "Gravação salva")
                         self._log_card(value)
+                elif kind == "interrompidas":
+                    ativas = set(self.recorder.partes_ativas)
+                    for item in value:
+                        if ativas.intersection(item.partes):
+                            continue      # e a gravacao que comecou agora
+                        self._card_resgate(item)
+                elif kind == "resgatou":
+                    if getattr(value, "final_path", ""):
+                        self._apply_state("concluido", "Gravação resgatada")
+                        self._log_card(value)
+                    self._sync_buttons()
+                elif kind == "progresso":
+                    # (fracao, texto) do compositor: a barra vive no editor,
+                    # mas so a thread da interface pode mexer nela. Um evento
+                    # torto nao pode derrubar o laco - sem ele a janela inteira
+                    # pararia de receber avisos.
+                    try:
+                        fracao, texto = value
+                        self.editor.andou(float(fracao), str(texto))
+                    except (TypeError, ValueError, tk.TclError):
+                        pass
                 elif kind == "exportou":
+                    # O editor so liga os botoes do video pronto aqui: e esta
+                    # a thread da interface, a unica que pode mexer neles.
+                    try:
+                        self.editor.exportou(str(value or ""))
+                    except tk.TclError:
+                        pass
                     if value:
                         self._log(f"Vídeo exportado: {os.path.basename(str(value))}")
                         self._apply_state("concluido", "Vídeo exportado")
@@ -684,6 +970,8 @@ class App(tk.Tk):
             self.editor.encerrar()
         except Exception:                            # noqa: BLE001
             pass
+        if self.preview_player is not None:
+            self.preview_player.encerrar()
         self.destroy()
 
 

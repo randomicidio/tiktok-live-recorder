@@ -17,12 +17,23 @@ Os vídeos vão para `Vídeos\TikTok Lives\` (ou a pasta que você escolher).
 
 ## O executável
 
-O `.exe` é **um arquivo só, de 52,7 MB, que não depende de nada**: não precisa
-de Python, nem de ffmpeg, nem de instalação. Copie para onde quiser — pendrive,
-outro PC, área de trabalho — e ele funciona.
+O `.exe` é **um arquivo só que não depende de nada**: não precisa de Python,
+nem de ffmpeg, nem de instalação. Copie para onde quiser — pendrive, outro PC,
+área de trabalho — e ele funciona.
 
-O ffmpeg vai embutido dentro dele. Testado num ambiente com o PATH limpo de
-Python e ffmpeg: abriu e reconheceu tudo normalmente.
+O ffmpeg, o ffprobe e a libmpv vão embutidos dentro dele, e é daí que vem quase
+todo o tamanho: os dois binários do ffmpeg somam mais de 130 MB nas builds
+atuais, então o executável sai em torno de 160 MB. Se quiser um arquivo menor,
+empacote com uma build enxuta do ffmpeg no PATH — o script usa a que estiver lá.
+
+Os dois são obrigatórios, e por motivos diferentes: o **ffmpeg** grava e monta
+os vídeos, e o **ffprobe** informa duração e resolução. Sem o ffprobe o editor
+não consegue nem abrir um arquivo, então o build recusa empacotar sem ele.
+
+Testado num ambiente com o PATH limpo de Python e de ffmpeg: abriu e anotou no
+registro que a prévia do editor e o registro de presentes estão disponíveis,
+sem nenhum aviso de binário faltando — ou seja, achou tudo dentro do próprio
+pacote.
 
 As configurações ficam num `config.json` ao lado do executável. Se a pasta for
 somente leitura (Program Files, por exemplo), ele passa a usar
@@ -40,6 +51,17 @@ somente leitura (Program Files, por exemplo), ele passa a usar
 Durante a gravação o botão fica travado em **GRAVANDO**, de propósito: para
 encerrar use **■ Parar e salvar**, e assim ninguém derruba uma gravação em
 andamento com um clique distraído.
+
+### Armar sozinho ao abrir
+
+A opção **"Armar o REC sozinho ao abrir o programa"** dispensa o primeiro
+clique: com ela marcada, basta abrir o programa que ele já sai armado, com a
+conta e a pasta que estavam salvas. Serve para não perder uma live por ter
+esquecido de apertar REC.
+
+Se faltar o @ ou a pasta não puder ser usada, o motivo vai para o registro e a
+faixa fica vermelha — nenhuma janela de aviso aparece, justamente porque um
+diálogo esperando OK seguraria a gravação até alguém voltar ao computador.
 
 ## O painel de estado
 
@@ -86,16 +108,22 @@ passa por recompressão.
 
 ## Por que isso não derruba os frames da sua live
 
-O programa **não captura a tela e não recodifica nada**. Ele pede ao TikTok a
+O programa **não captura a tela e não recodifica o vídeo**. Ele pede ao TikTok a
 mesma URL de vídeo que o celular de quem te assiste recebe, e o ffmpeg copia
-esses bytes para o disco (`-c copy`).
+esses bytes de vídeo para o disco (`-c:v copy`).
+
+O áudio é a única exceção: o TikTok transmite em HE-AAC, que editores como o
+DaVinci Resolve não conseguem ler, então ele é convertido para AAC-LC durante a
+gravação. É barato porque mexe só no áudio — o vídeo, que é a parte pesada,
+continua sendo cópia crua.
 
 Medido nesta máquina, gravando um stream 1080x1920 a 2,5 Mbps:
 
 | | CPU |
 |---|---|
-| Este gravador (`-c copy`) | abaixo do medível — 0,00s de CPU em 14s |
-| Um gravador que recodifica | 0,97s de CPU em 14s |
+| Este gravador (vídeo copiado, áudio convertido) | 2% de um núcleo — 12,3s de CPU por 10 min de live |
+| O mesmo, se o áudio também fosse copiado | abaixo do medível — 0,4s por 10 min |
+| Um gravador que recodifica o vídeo | 0,97s de CPU em 14s (~7% de um núcleo) |
 
 O contador de tamanho na tela custa 0,14s de CPU por hora de live (0,004% de um
 núcleo). A GPU não é tocada. O que ele usa é ~2-3 Mbps de **download**, enquanto
@@ -111,6 +139,27 @@ são unidas num único MP4 automaticamente.
 
 Nada é perdido além do que ainda não tinha baixado. A gravação vai para arquivos
 `.ts`, um formato que não corrompe com interrupção — o MP4 só é montado no fim.
+Eles ficam soltos na pasta de saída, com o nome da live e o sufixo `_parte01`,
+justamente para não sumirem da vista quando algo dá errado.
+
+Na próxima vez que o programa abrir, ele percebe sozinho que aquela gravação não
+chegou a virar MP4 e põe no registro um cartão amarelo com a data, o tamanho e um
+botão **Recuperar**. Não aparece nenhuma janela pedindo resposta: se você ignorar,
+o cartão simplesmente volta na abertura seguinte.
+
+Um clique junta as partes, monta o MP4 e refaz o `.ttgifts` a partir do registro
+de presentes e chat. O resultado é indistinguível de uma gravação que terminou
+bem — o editor acha o pacote sozinho.
+
+**Vale correr com esse.** Remontar o vídeo pode esperar o tempo que for, mas o
+`.ttgifts` guarda as animações dos presentes baixando-as do TikTok na hora em que
+é fechado, e essas URLs expiram em algumas horas. Quanto antes recuperar, mais
+animação se salva. O texto do chat e a lista de presentes não têm esse prazo:
+estão no disco desde o momento em que aconteceram.
+
+A varredura não pesa na abertura: são décimos de milissegundo, e ela roda em
+segundo plano — a janela abre no mesmo tempo de sempre e o cartão chega logo
+depois.
 
 ---
 
@@ -192,6 +241,66 @@ Três coisas para saber:
 dos dois foi executado num macOS de verdade. O workflow foi escrito para se
 verificar sozinho justamente por isso: se algo estiver errado, ele acusa em vez
 de entregar um app quebrado.*
+
+## A aba Editar
+
+É onde o vídeo gravado ganha as camadas: as animações oficiais dos presentes, o
+chat e o cartão de presente. A prévia mostra tudo isso ao vivo, no lugar e no
+instante em que vai sair no arquivo.
+
+**A barra de navegação.** Clicar leva direto ao ponto clicado. Ao fundo vai a
+forma de onda do áudio, e por cima dela as marcas de **Início** (verde) e
+**Fim** (vermelho), que podem ser arrastadas. A roda do mouse aproxima a vista
+em volta do ponteiro — dá para chegar a menos de dois segundos de janela, o que
+é precisão de quadro; o botão direito arrasta a vista, e o **⤢** volta a mostrar
+o vídeo inteiro.
+
+**Sincronia do áudio.** Quando a gravação sai com o som deslocado do vídeo, o
+campo em milissegundos acerta os dois: positivo atrasa o áudio, negativo o
+adianta. Vale ao mesmo tempo na prévia, na forma de onda e no vídeo exportado, e
+volta a zero a cada vídeo aberto — um acerto esquecido de outro arquivo
+estragaria o corte seguinte sem ninguém perceber. O espaço nesse campo toca o
+vídeo em vez de digitar, e devolve o teclado à barra do tempo.
+Quem se desloca é o áudio da live: as animações, o chat e o contador
+são posicionados pelo relógio do vídeo, e o som das animações continua onde
+estava. Na exportação o arquivo entra duas vezes, com o corte do áudio
+deslocado, para o som seguir inteiro nas duas pontas do trecho em vez de abrir
+um silêncio no começo.
+
+**A prévia é a mesma coisa que o arquivo.** O chat e o contador são desenhados
+pelo mesmo código que a exportação usa, então o que aparece na tela é o que sai
+no MP4 — não é uma aproximação.
+
+**Abrir e exportar lembram pastas diferentes.** O replay da live costuma ficar
+num lugar e os cortes em outro, então cada diálogo volta para onde esteve pela
+última vez, sem um arrastar o outro. Ficam no `editor.json`, ao lado do
+`config.json`.
+
+**A exportação mostra o progresso** das duas etapas (desenhar o chat e montar o
+vídeo) e pode ser cancelada. Ela continua normalmente se você trocar de aba ou
+minimizar a janela; enquanto ela roda, a prévia para de desenhar para não
+disputar processador com a exportação.
+
+## Como o chat e o contador foram medidos
+
+Não há arte oficial dessas camadas, então elas são reconstruídas. As medidas não
+foram estimadas a olho: saíram de uma gravação de tela do aplicativo a 1080 px
+de largura, medindo pixel a pixel a foto, a coluna do texto, a entrelinha, a
+altura de caixa alta das fontes, a opacidade da pílula do cartão e a duração de
+cada animação. Tudo fica guardado em **fração da largura do vídeo**, e é isso
+que faz o resultado bater com o original em qualquer resolução.
+
+O que foi copiado da referência:
+
+| Detalhe | Como é |
+|---|---|
+| Fonte | TikTok Sans em Medium (500); os números do cartão em Bold |
+| Chat | apelido apagado em cima, mensagem em branco embaixo, sem retângulo de fundo — a legibilidade vem de uma sombra suave |
+| Topo do chat | a mensagem que sai por cima se dissolve numa faixa curta, não de uma vez |
+| Mensagem nova | a pilha desliza para cima em vez de saltar |
+| Cartão de presente | entra pela esquerda, sai em dissolução; texto comprido termina em "…" |
+| Contagem | o `x` sai bem menor que os dígitos; a cada unidade nova o número apaga por um instante e volta grande, encolhendo até o tamanho normal |
+| Presente único | não mostra contagem nenhuma, igual ao app |
 
 ## Arquivos
 

@@ -23,18 +23,26 @@ NOME = resources.APP_NAME
 DIST = os.path.join(BASE, "dist")
 
 
-def acha_ffmpeg() -> str:
-    caminho = shutil.which("ffmpeg")
-    if not caminho:
-        sys.exit("ffmpeg não encontrado no PATH - instale antes de empacotar.")
-    return caminho
+def acha_ffmpeg() -> tuple[str, str]:
+    """Os dois binários que o programa usa. Faltar um dos dois quebra o pacote.
+
+    O ffprobe é tão obrigatório quanto o ffmpeg: é ele que informa duração e
+    resolução do vídeo, e sem isso o editor não consegue nem abrir um arquivo.
+    """
+    achados = []
+    for nome in ("ffmpeg", "ffprobe"):
+        caminho = shutil.which(nome)
+        if not caminho:
+            sys.exit(f"{nome} não encontrado no PATH - instale antes de empacotar.")
+        achados.append(caminho)
+    return achados[0], achados[1]
 
 
 def main() -> None:
     if os.name != "nt":
         sys.exit("Este script gera o executável do Windows. No Mac use build_mac.sh.")
 
-    ffmpeg = acha_ffmpeg()
+    ffmpeg, ffprobe = acha_ffmpeg()
     libmpv = os.path.join(BASE, "mpvlib", "libmpv-2.dll")
     if not os.path.exists(libmpv):
         sys.exit("libmpv-2.dll não está em mpvlib/ - o editor não teria prévia.\n"
@@ -51,7 +59,9 @@ def main() -> None:
         subprocess.run([sys.executable, os.path.join(BASE, "emoji_pack.py")], check=True)
 
     print(f"Empacotando {NOME} v{resources.APP_VERSION}")
-    print(f"  ffmpeg: {ffmpeg} ({os.path.getsize(ffmpeg) / 1024 / 1024:.0f} MB)\n")
+    for nome, caminho in (("ffmpeg", ffmpeg), ("ffprobe", ffprobe)):
+        print(f"  {nome}: {caminho} ({os.path.getsize(caminho) / 1024 / 1024:.0f} MB)")
+    print()
 
     args = [
         sys.executable, "-m", "PyInstaller",
@@ -62,6 +72,7 @@ def main() -> None:
         "--icon", icone,
         "--add-data", f"{os.path.join(BASE, 'assets')}{os.pathsep}assets",
         "--add-binary", f"{ffmpeg}{os.pathsep}.",
+        "--add-binary", f"{ffprobe}{os.pathsep}.",
         # O registro de presentes usa TikTokLive, que carrega submodulos por
         # nome - sem collect-all o PyInstaller nao os encontra.
         "--collect-all", "TikTokLive",
@@ -71,7 +82,10 @@ def main() -> None:
         # O editor usa a libmpv para a previa com as camadas.
         "--add-binary", f"{libmpv}{os.pathsep}mpvlib",
         "--hidden-import", "mpv",
-        # PIL desenha o chat e recorta os avatares - agora e obrigatoria.
+        # PIL desenha o chat e recorta os avatares - agora e obrigatoria. O
+        # ImageTk entra por nome (a linha do tempo do editor desenha a forma
+        # de onda numa imagem), entao o PyInstaller precisa ser avisado.
+        "--hidden-import", "PIL.ImageTk",
         "--exclude-module", "numpy",
         "--exclude-module", "matplotlib",
         "--exclude-module", "pytest",

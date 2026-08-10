@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 
 APP_NAME = "Tiktok Live Recorder"
@@ -86,6 +87,35 @@ def default_output_dir() -> str:
     if not os.path.isdir(base):
         base = os.path.expanduser("~")
     return os.path.join(base, "TikTok Lives")
+
+
+def open_path(path: str) -> None:
+    """Abre o arquivo ou a pasta no programa padrao do sistema.
+
+    Mora aqui, e nao na janela, porque as duas abas precisam dela: o gravador
+    oferece o video assim que termina, e o editor faz o mesmo com o exportado.
+    """
+    if not os.path.exists(path):
+        return
+    if IS_WINDOWS:
+        os.startfile(path)  # noqa: S606
+    elif IS_MAC:
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
+
+
+def reveal_in_explorer(path: str) -> None:
+    """Mostra o arquivo ja selecionado no gerenciador de arquivos."""
+    if not os.path.exists(path):
+        return
+    if IS_WINDOWS:
+        # O explorer devolve codigo 1 mesmo dando certo; nao ha o que checar.
+        subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+    elif IS_MAC:
+        subprocess.Popen(["open", "-R", path])   # -R revela no Finder
+    else:
+        open_path(os.path.dirname(path))
 
 
 def find_binary(nome: str) -> str | None:

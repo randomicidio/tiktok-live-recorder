@@ -38,6 +38,54 @@ def acha_ffmpeg() -> tuple[str, str]:
     return achados[0], achados[1]
 
 
+def confere_conteudo(exe: str) -> None:
+    """Confere que as peças dos recursos principais entraram no executável.
+
+    Um --hidden-import que falha e um --collect-all que não acha nada só viram
+    aviso no log do PyInstaller: o build "passa" e o programa sai mancando -
+    editor sem prévia, ou sem registrar presente nenhum. Quem descobre é quem
+    baixou. Melhor quebrar o build aqui.
+    """
+    from PyInstaller.archive.readers import CArchiveReader
+
+    try:
+        pacote = CArchiveReader(exe)
+        # Os binarios e arquivos de dados estao no CArchive; os modulos Python
+        # ficam no PYZ interno, que precisa ser aberto a parte.
+        arquivos = {os.path.basename(n).lower() for n in pacote.toc}
+        pyz = next(n for n in pacote.toc if n.lower().endswith(".pyz"))
+        modulos = set(pacote.open_embedded_archive(pyz).toc)
+    except Exception as e:                           # noqa: BLE001
+        print(f"  aviso: não consegui inspecionar o pacote ({e}) - seguindo.")
+        return
+
+    def tem(prefixo: str) -> bool:
+        return any(m == prefixo or m.startswith(prefixo + ".") for m in modulos)
+
+    exigidos = {
+        "mpv": "prévia do editor",
+        "TikTokLive": "registro de presentes e chat",
+        "PIL": "desenho do chat",
+        "requests": "download das animações",
+    }
+    faltando = [f"{mod} ({para})" for mod, para in exigidos.items() if not tem(mod)]
+
+    # O nome vem do arquivo de origem, e no Windows a extensao pode chegar em
+    # maiuscula (ffmpeg.EXE) dependendo de onde o ffmpeg foi instalado.
+    binarios = [b for b in ("ffmpeg.exe", "ffprobe.exe", "libmpv-2.dll")
+                if b.lower() not in arquivos]
+
+    if faltando or binarios:
+        recado = ["O executável saiu incompleto:"]
+        if faltando:
+            recado.append("  módulos que não entraram: " + ", ".join(faltando))
+        if binarios:
+            recado.append("  binários que não entraram: " + ", ".join(binarios))
+        sys.exit("\n".join(recado))
+
+    print("  conferido: mpv, TikTokLive, PIL, requests, ffmpeg, ffprobe e libmpv dentro.")
+
+
 def main() -> None:
     if os.name != "nt":
         sys.exit("Este script gera o executável do Windows. No Mac use build_mac.sh.")
@@ -57,6 +105,14 @@ def main() -> None:
     if not os.path.exists(emoji):
         print("Conjunto de emoji ausente; baixando...")
         subprocess.run([sys.executable, os.path.join(BASE, "emoji_pack.py")], check=True)
+
+    # O python-mpv procura a DLL no PATH JA NO import, e o PyInstaller importa
+    # de verdade o que vem em --hidden-import para analisar. Sem esta linha o
+    # import levanta OSError, o PyInstaller registra um aviso no meio de mil
+    # linhas de log e segue: o executavel sai completo, com a DLL dentro, mas
+    # SEM o modulo mpv - e o editor abre sem previa. Falha silenciosa classica,
+    # entao o resultado e conferido abaixo em vez de confiado.
+    os.environ["PATH"] = os.path.dirname(libmpv) + os.pathsep + os.environ.get("PATH", "")
 
     print(f"Empacotando {NOME} v{resources.APP_VERSION}")
     for nome, caminho in (("ffmpeg", ffmpeg), ("ffprobe", ffprobe)):
@@ -100,6 +156,8 @@ def main() -> None:
     exe = os.path.join(DIST, f"{NOME}.exe")
     if not os.path.exists(exe):
         sys.exit("Build terminou mas o .exe não apareceu em dist/.")
+
+    confere_conteudo(exe)
 
     print(f"\nPronto em {time.time() - inicio:.0f}s")
     print(f"  {exe}")

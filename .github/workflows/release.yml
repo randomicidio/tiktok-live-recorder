@@ -145,7 +145,32 @@ jobs:
       - name: Instalar dependências de build
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller requests pillow
+          pip install pyinstaller requests pillow python-mpv TikTokLive
+
+      # A libmpv nao e versionada (117 MB). Sem ela o build para: o editor
+      # ficaria sem previa e nao ha por que publicar um executavel manco.
+      # O nome do pacote carrega data e hash do commit, entao a URL nao pode
+      # ser fixa - e resolvida pelo release mais recente.
+      - name: Baixar a libmpv
+        shell: pwsh
+        run: |
+          $api = "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest"
+          $rel = Invoke-RestMethod -Uri $api -Headers @{
+            "User-Agent"    = "tiktok-live-recorder-build"
+            "Authorization" = "Bearer ${{ secrets.GITHUB_TOKEN }}"
+          }
+          # x86_64 simples, nao o -v3: aquele exige AVX2 e nao abriria em
+          # maquina mais antiga.
+          $asset = $rel.assets | Where-Object { $_.name -match '^mpv-dev-x86_64-\d' } | Select-Object -First 1
+          if (-not $asset) { throw "pacote mpv-dev x86_64 nao encontrado no release $($rel.tag_name)" }
+          Write-Host "baixando $($asset.name)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile mpv-dev.7z
+          7z x mpv-dev.7z -ompv_dl | Out-Null
+          $dll = Get-ChildItem -Path mpv_dl -Recurse -Filter libmpv-2.dll | Select-Object -First 1
+          if (-not $dll) { throw "libmpv-2.dll nao veio no pacote" }
+          New-Item -ItemType Directory -Force mpvlib | Out-Null
+          Copy-Item $dll.FullName mpvlib\libmpv-2.dll
+          "libmpv: {0:N0} MB" -f ((Get-Item mpvlib\libmpv-2.dll).Length / 1MB)
 
       # Build estático oficial do projeto BtbN: um .exe sem dependências.
       - name: Baixar o ffmpeg

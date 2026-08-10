@@ -86,6 +86,46 @@ então dá para conferir pela barra de tarefas com a janela minimizada.
 Cada gravação concluída vira um cartão com miniatura, tamanho, duração e dois
 atalhos: **▶ Abrir vídeo** e **Ver na pasta**.
 
+As mesmas linhas vão para um `registro.log` ao lado do `config.json`, que
+sobrevive ao fechamento do programa. É lá que aparece o motivo quando algo dá
+errado numa máquina que não é a sua — inclusive travamentos, que antes sumiam
+sem deixar rastro (num `.exe` sem console não há para onde o erro ir). O arquivo
+se limita a 2 MB e guarda uma geração anterior em `registro.log.1`.
+
+## O computador não dorme com o REC armado
+
+Enquanto o REC está armado — esperando a live ou gravando — o programa impede a
+suspensão automática do Windows. Sem isso, armar e sair de casa terminava com o
+PC dormindo em meia hora e a live perdida. Só o sono do sistema é barrado: a
+tela apaga normalmente, e tudo volta ao normal assim que você desarma.
+
+## Espaço em disco
+
+Ao armar, o programa diz quanto cabe: uma live 1080x1920 rende por volta de
+1,1 GB por hora. Abaixo de 5 GB livres ele avisa no registro, e abaixo de 1 GB
+avisa de novo durante a gravação. São só avisos — nada é bloqueado, e a decisão
+de gravar mesmo assim é sua.
+
+## Versão nova
+
+Na abertura, o programa consulta se saiu uma versão mais nova e, se saiu, põe um
+cartão azul no registro com um atalho para a página. Não baixa nada nem altera
+nada. Isso existe por causa da limitação lá embaixo: os endpoints do TikTok
+podem mudar, e sem esse aviso quem tem o executável antigo ficaria preso numa
+versão quebrada sem saber que já existe conserto.
+
+Se não houver rede, ou nenhuma versão publicada, a consulta falha em silêncio.
+
+## O cookie fica cifrado
+
+O campo de cookie guarda a sessão da sua conta: quem o tem entra como você. Ele
+é gravado no `config.json` cifrado pela DPAPI do Windows, que usa a sua conta de
+usuário como chave — sem senha para inventar. Na prática isso significa que um
+`config.json` copiado para outra máquina não entrega o cookie lá.
+
+Configurações antigas, com o cookie em texto puro, continuam funcionando e
+passam a ser gravadas cifradas na primeira vez que algo for salvo.
+
 ## Qualidade e FPS: não há o que escolher
 
 O programa sempre pega a variante `origin` do TikTok, que é o seu próprio vídeo
@@ -315,6 +355,10 @@ O que foi copiado da referência:
 | `compositor.py` | Monta o vídeo final com as animações e o chat |
 | `tipografia.py` | Desenha texto de qualquer idioma e os emoji |
 | `resources.py` | Acha arquivos e binários, empacotado ou não |
+| `diario.py` | Registro em arquivo e captura de travamentos |
+| `segredo.py` | Cifra o cookie com a DPAPI do Windows |
+| `atualizacao.py` | Consulta se saiu versão nova |
+| `testes.py` | Testes de regressão (`python testes.py`) |
 | `make_icon.py` | Gera os ícones (`.ico`, `.icns`, `.png`) |
 | `emoji_pack.py` | Monta `assets/emoji.zip` (chamado pelo build) |
 | `build_windows.py` | Empacota o `.exe` |

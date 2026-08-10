@@ -20,6 +20,7 @@ from __future__ import annotations
 import functools
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -50,6 +51,91 @@ def find_ffmpeg() -> str | None:
 def _ffmpeg() -> str:
     """Caminho a usar nas chamadas. Nunca confia no PATH quando empacotado."""
     return find_ffmpeg() or "ffmpeg"
+
+
+# ---------------------------------------------------------------- energia
+
+# Sinalizadores do SetThreadExecutionState (winbase.h).
+_ES_CONTINUOUS = 0x80000000
+_ES_SYSTEM_REQUIRED = 0x00000001
+
+
+class Vigilia:
+    """Impede o computador de dormir enquanto uma gravacao esta correndo.
+
+    O caso de uso central do programa e armar o REC e sair de casa, e e
+    exatamente ai que o Windows suspende sozinho depois de meia hora e mata a
+    captura. So o sono do sistema e barrado: a tela pode apagar normalmente.
+
+    No Windows o estado vale para a thread que o pediu, entao `ligar` e
+    `desligar` precisam sair da mesma thread - a do laco de gravacao.
+    """
+
+    def __init__(self, emit=None):
+        self.emit = emit
+        self._ligada = False
+        self._proc: subprocess.Popen | None = None
+
+    def ligar(self) -> None:
+        if self._ligada:
+            return
+        try:
+            if resources.IS_WINDOWS:
+                import ctypes
+                anterior = ctypes.windll.kernel32.SetThreadExecutionState(
+                    _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED)
+                if anterior == 0:
+                    raise OSError("SetThreadExecutionState recusou o pedido")
+            elif resources.IS_MAC:
+                # -i barra o sono por ociosidade; o processo morre junto com
+                # este, entao nao fica nada pendurado se o programa cair.
+                self._proc = subprocess.Popen(
+                    ["caffeinate", "-i", "-w", str(os.getpid())])
+            else:
+                return
+        except (OSError, AttributeError) as e:
+            if self.emit:
+                self.emit("log", f"Não consegui impedir a suspensão do sistema: {e}")
+            return
+        self._ligada = True
+
+    def desligar(self) -> None:
+        if not self._ligada:
+            return
+        self._ligada = False
+        try:
+            if resources.IS_WINDOWS:
+                import ctypes
+                ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
+            elif self._proc is not None:
+                self._proc.terminate()
+                self._proc = None
+        except (OSError, AttributeError):
+            pass          # voltar ao normal nao pode derrubar o fechamento
+
+
+# Uma live 1080x1920 a ~2,5 Mbps rende por volta de 1,1 GB por hora. Cinco GB
+# sao uma tarde inteira de transmissao; abaixo disso vale avisar antes de armar.
+ESPACO_CONFORTAVEL = 5 * 1024 ** 3
+ESPACO_CRITICO = 1024 ** 3
+
+# Bytes por segundo usados para estimar quanto tempo ainda cabe no disco.
+_BYTES_POR_SEGUNDO = 2.5 * 1024 ** 2 / 8
+
+
+def espaco_livre(pasta: str) -> int:
+    """Bytes livres onde as gravacoes vao cair, ou -1 se nao der para saber."""
+    try:
+        return shutil.disk_usage(pasta).free
+    except OSError:
+        return -1
+
+
+def horas_que_cabem(bytes_livres: int) -> float:
+    """Quantas horas de live cabem no espaco que sobrou."""
+    if bytes_livres < 0:
+        return 0.0
+    return bytes_livres / _BYTES_POR_SEGUNDO / 3600
 
 
 def sanitize(name: str, fallback: str = "live") -> str:
@@ -304,6 +390,13 @@ class Recorder:
         # Nunca reabrimos uma gravação para a mesma sala até vê-la offline.
         sala_encerrada = ""
 
+        # A vigilia cobre o ciclo armado inteiro, nao so a captura: se o
+        # computador dormir enquanto espera a live comecar, a verificacao
+        # periodica para e a live e perdida do mesmo jeito. Sai daqui porque no
+        # Windows o estado pertence a thread que o pediu.
+        vigilia = Vigilia(self.emit)
+        vigilia.ligar()
+
         try:
             while not self._stop.is_set():
                 try:
@@ -349,6 +442,7 @@ class Recorder:
                 if self._stop.wait(poll_seconds):
                     break
         finally:
+            vigilia.desligar()
             self.recording = False
             self.session_started = None
             self._partes = []

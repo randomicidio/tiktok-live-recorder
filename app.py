@@ -18,13 +18,19 @@ import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
+import atualizacao
+import bandeja as bandeja_mod
+import diario
 import editor
 import recorder
 import resources
+import segredo
 import tiktok_api
 
 BASE_DIR = resources.data_dir()
@@ -91,15 +97,20 @@ def load_config() -> dict:
             cfg.update(json.load(fh))
     except (OSError, ValueError):
         pass
+    # O cookie e a sessao da conta e fica cifrado em disco; aqui ele volta ao
+    # normal para o resto do programa nao precisar saber disso.
+    cfg["cookie"] = segredo.decifrar(str(cfg.get("cookie") or ""))
     # Descarta chaves de versoes antigas (qualidade e navegador ja nao existem)
     # para o arquivo nao acumular lixo a cada gravacao.
     return {k: v for k, v in cfg.items() if k in DEFAULTS}
 
 
 def save_config(cfg: dict) -> None:
+    gravavel = dict(cfg)
+    gravavel["cookie"] = segredo.cifrar(str(cfg.get("cookie") or ""))
     try:
         with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
-            json.dump(cfg, fh, indent=2, ensure_ascii=False)
+            json.dump(gravavel, fh, indent=2, ensure_ascii=False)
     except OSError:
         pass
 
@@ -108,6 +119,47 @@ def save_config(cfg: dict) -> None:
 # ficam aqui porque a aba do gravador ja os usa em varios lugares.
 open_path = resources.open_path
 reveal_in_explorer = resources.reveal_in_explorer
+
+
+class _Dica:
+    """Texto de ajuda ao parar o mouse. O botão da bandeja é só um ponto, e
+    sem isso ninguém descobriria para que ele serve."""
+
+    def __init__(self, alvo, texto: str):
+        self.alvo = alvo
+        self.texto = texto
+        self.janela = None
+        self._id = None
+        alvo.bind("<Enter>", self._agendar, add="+")
+        alvo.bind("<Leave>", self._sumir, add="+")
+        alvo.bind("<Button-1>", self._sumir, add="+")
+
+    def _agendar(self, _evt=None) -> None:
+        self._cancelar()
+        self._id = self.alvo.after(600, self._mostrar)
+
+    def _cancelar(self) -> None:
+        if self._id:
+            self.alvo.after_cancel(self._id)
+            self._id = None
+
+    def _mostrar(self) -> None:
+        if self.janela is not None:
+            return
+        x = self.alvo.winfo_rootx() - 120
+        y = self.alvo.winfo_rooty() + self.alvo.winfo_height() + 6
+        self.janela = tk.Toplevel(self.alvo)
+        self.janela.wm_overrideredirect(True)
+        self.janela.wm_geometry(f"+{max(0, x)}+{y}")
+        tk.Label(self.janela, text=self.texto, bg="#1e293b", fg="#f8fafc",
+                 font=("Segoe UI", 9), padx=8, pady=4, wraplength=220,
+                 justify="left").pack()
+
+    def _sumir(self, _evt=None) -> None:
+        self._cancelar()
+        if self.janela is not None:
+            self.janela.destroy()
+            self.janela = None
 
 
 def formata_tamanho(num_bytes: int) -> str:
@@ -130,6 +182,12 @@ def formata_duracao(segundos: int) -> str:
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        # Antes de qualquer outra coisa: uma falha durante a propria montagem
+        # da janela e justamente a que hoje sumiria sem deixar rastro. O
+        # `iniciar` e idempotente - o __main__ ja chamou, mas quem importar o
+        # modulo e construir a janela direto tambem precisa do registro.
+        diario.iniciar()
+        diario.vigiar_tk(self)
         self.title(APP_TITLE)
         self.geometry("1000x700")
         self.minsize(650, 500)
@@ -148,6 +206,11 @@ class App(tk.Tk):
         self._preview_url = ""
         self._preview_carregada = ""
         self.preview_player = None
+        # Vigia de disco: avisa uma vez por sessao, checando de minuto em minuto.
+        self._espaco_avisado = False
+        self._ultimo_espaco = 0.0
+        self._tray = None
+        self._na_bandeja = False
 
         self._build_ui()
         self.bind("<Configure>", self._janela_redimensionada, add="+")
@@ -162,6 +225,7 @@ class App(tk.Tk):
         # A varredura sai de imediato, mas em thread: nao atrasa nem a janela
         # nem o REC automatico acima.
         self._procurar_interrompidas()
+        self._procurar_versao()
 
     # ------------------------------------------------------------------ UI
 
@@ -192,6 +256,25 @@ class App(tk.Tk):
         marca.create_oval(4, 4, 22, 22, outline="#f87171", width=2)
         marca.create_oval(8, 8, 18, 18, fill="#ef4444", outline="")
         marca.pack(side="left")
+
+        # Botao de esconder na bandeja. Fica aqui, na faixa do proprio
+        # programa, e nao junto do minimizar do Windows: aquela barra e area
+        # nao-cliente, e por um botao ali seria preciso desenhar a barra
+        # inteira a mao - perdendo o encaixe lateral, o sacudir para minimizar
+        # e o tema nativo. Aqui embaixo o efeito e o mesmo e nada se perde.
+        if bandeja_mod.DISPONIVEL:
+            self.btn_bandeja = tk.Label(
+                interno, text="•", bg="#0f172a", fg="#94a3b8",
+                font=("Segoe UI", 15, "bold"), cursor="hand2", padx=9,
+            )
+            self.btn_bandeja.pack(side="right")
+            self.btn_bandeja.bind("<Button-1>", lambda _e: self.esconder_na_bandeja())
+            self.btn_bandeja.bind(
+                "<Enter>", lambda _e: self.btn_bandeja.configure(fg="#f8fafc"))
+            self.btn_bandeja.bind(
+                "<Leave>", lambda _e: self.btn_bandeja.configure(fg="#94a3b8"))
+            _Dica(self.btn_bandeja, "Esconder na bandeja (o programa continua "
+                                    "gravando)")
 
         tk.Label(interno, text=resources.APP_NAME, bg="#0f172a", fg="#f8fafc",
                  font=("Segoe UI Semibold", 13)).pack(side="left", padx=(10, 0))
@@ -469,6 +552,7 @@ class App(tk.Tk):
     def _apply_state(self, key: str, text: str) -> None:
         """Pinta a faixa inteira com as cores do estado informado."""
         pal = PALETTE.get(key, NEUTRO)
+        anterior = self._state_key
         self._state_key = key
         self.status_var.set(text)
 
@@ -483,6 +567,15 @@ class App(tk.Tk):
 
         if key != "gravando":
             self.detail_var.set("")
+
+        # A bandeja acompanha o estado: a dica do icone e o unico lugar onde
+        # ele aparece enquanto a janela esta escondida.
+        if self._tray is not None and self._na_bandeja:
+            self._tray.dica(self._texto_da_bandeja())
+            if key == "gravando" and anterior != "gravando":
+                self._avisar_na_bandeja("Gravando",
+                                        "A live começou e está sendo gravada.")
+
         self._sync_buttons()
 
     def _pulse(self) -> None:
@@ -494,6 +587,12 @@ class App(tk.Tk):
                 self.dot_item, fill=pal["dot"] if self._blink_on else pal["bg"]
             )
             self._update_detail()
+            # O disco e consultado uma vez por minuto, e nao a cada piscada: a
+            # chamada e barata, mas 6.500 vezes por hora nao serve para nada.
+            agora = time.monotonic()
+            if agora - self._ultimo_espaco > 60:
+                self._ultimo_espaco = agora
+                self._conferir_espaco_gravando()
         elif self._blink_on:
             self._blink_on = False
             self.dot.itemconfigure(self.dot_item, fill=pal["dot"])
@@ -510,6 +609,7 @@ class App(tk.Tk):
     # ------------------------------------------------------------- registro
 
     def _log(self, msg: str) -> None:
+        diario.escrever(msg)
         self.log.configure(state="normal")
         self.log.insert("end", f"[{datetime.now():%H:%M:%S}] {msg}\n")
         self.log.see("end")
@@ -569,6 +669,61 @@ class App(tk.Tk):
         self.log.see("end")
         self.log.configure(state="disabled")
 
+    # -------------------------------------------------------------- bandeja
+
+    def _bandeja(self):
+        """Cria a bandeja na primeira vez que ela for usada.
+
+        Sob demanda de propósito: quem nunca clica no botão não paga por uma
+        thread e um ícone registrados à toa.
+        """
+        if self._tray is not None:
+            return self._tray
+        if not bandeja_mod.DISPONIVEL:
+            return None
+        # Os callbacks chegam da thread da bandeja; o Tk só pode ser tocado na
+        # dele, então tudo passa pela fila que o `_drain` já consome.
+        tray = bandeja_mod.Bandeja(
+            ao_restaurar=lambda: self.events.put(("restaurar", "")),
+            ao_sair=lambda: self.events.put(("sair", "")),
+            dica=APP_TITLE)
+        if not tray.ligar():
+            self._log("Não consegui criar o ícone na bandeja.")
+            return None
+        self._tray = tray
+        return tray
+
+    def esconder_na_bandeja(self) -> None:
+        tray = self._bandeja()
+        if tray is None:
+            self.iconify()          # sem bandeja, ao menos minimiza
+            return
+        tray.mostrar(self._texto_da_bandeja())
+        self.withdraw()
+        self._na_bandeja = True
+
+    def restaurar_da_bandeja(self) -> None:
+        self._na_bandeja = False
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        if self._tray is not None:
+            self._tray.esconder()
+
+    def _texto_da_bandeja(self) -> str:
+        """O estado vive na dica do ícone: é o que aparece ao passar o mouse."""
+        estado = self.status_var.get()
+        return f"{APP_TITLE} — {estado}" if estado else APP_TITLE
+
+    def _avisar_na_bandeja(self, titulo: str, texto: str) -> None:
+        """Balão do Windows, só quando a janela está escondida.
+
+        Com a janela à vista o aviso seria redundante com a faixa colorida, e
+        notificação redundante é a que a pessoa aprende a ignorar.
+        """
+        if self._na_bandeja and self._tray is not None:
+            self._tray.notificar(titulo, texto)
+
     # -------------------------------------------------------- resgate
 
     def _procurar_interrompidas(self) -> None:
@@ -596,6 +751,40 @@ class App(tk.Tk):
                 self.events.put(("interrompidas", achadas))
 
         threading.Thread(target=varrer, daemon=True).start()
+
+    def _procurar_versao(self) -> None:
+        """Consulta em segundo plano se saiu versão nova. Falha em silêncio."""
+        def consultar() -> None:
+            nova = atualizacao.procurar()
+            if nova:
+                self.events.put(("versao", nova))
+
+        threading.Thread(target=consultar, daemon=True).start()
+
+    def _avisar_versao(self, nova: str) -> None:
+        """Uma linha no registro e um atalho. Sem janela: não é urgente."""
+        self._log(f"Saiu a versão {nova} (você está na v{resources.APP_VERSION}).")
+        card = tk.Frame(self.log, bg="#dbeafe", highlightthickness=1,
+                        highlightbackground="#93c5fd", bd=0)
+        info = tk.Frame(card, bg="#dbeafe")
+        info.pack(side="left", fill="both", expand=True, padx=12, pady=9)
+        tk.Label(info, text=f"Versão {nova} disponível", bg="#dbeafe",
+                 fg="#1e3a8a", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        tk.Label(info, text="Baixe o executável novo e ponha no lugar do antigo.",
+                 bg="#dbeafe", fg="#1e40af", font=("Segoe UI", 9),
+                 wraplength=330, justify="left").pack(anchor="w", pady=(2, 6))
+        tk.Button(info, text="Abrir a página", font=("Segoe UI", 9),
+                  bg="#bfdbfe", fg="#1e3a8a", bd=1, padx=12, pady=3,
+                  cursor="hand2",
+                  # webbrowser e nao open_path: aquela so abre caminhos que
+                  # existem em disco, e engoliria a URL sem dizer nada.
+                  command=lambda: webbrowser.open(atualizacao.PAGINA)).pack(anchor="w")
+        self.log.configure(state="normal")
+        self.log.insert("end", "\n")
+        self.log.window_create("end", window=card)
+        self.log.insert("end", "\n\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
 
     def _card_resgate(self, item: recorder.Interrompida) -> None:
         """Cartão discreto: se a pessoa ignorar, ele volta na próxima abertura."""
@@ -682,6 +871,8 @@ class App(tk.Tk):
         else:
             self._log("AVISO: registro de presentes indisponível (falta a biblioteca "
                       "TikTokLive) - a gravação funciona normalmente.")
+        if diario.caminho():
+            self._log(f"Registro em arquivo: {diario.caminho()}")
         self._log("Pronto.")
 
     def _pick_dir(self) -> None:
@@ -847,8 +1038,11 @@ class App(tk.Tk):
                                  f"Não consegui usar essa pasta:\n{e}", erro=True)
             return
 
+        self._avisar_espaco(outdir)
+
         self._persist()
         self._apply_state("aguardando", "Verificando...")
+        self._espaco_avisado = False
         self.recorder.registrar_presentes = bool(self.presentes_var.get())
         self.recorder.start(
             username=user,
@@ -859,6 +1053,38 @@ class App(tk.Tk):
             wait_for_live=bool(self.keep_var.get()),
         )
         self._sync_buttons()
+
+    def _avisar_espaco(self, outdir: str) -> None:
+        """Diz quanto cabe no disco antes de armar.
+
+        Vai para o registro e não para uma janela: quem arma o REC costuma
+        sair de casa, e um diálogo esperando OK seguraria a gravação. Também
+        não impede nada - a pessoa é quem decide se 40 minutos bastam.
+        """
+        livre = recorder.espaco_livre(outdir)
+        if livre < 0:
+            return
+        horas = recorder.horas_que_cabem(livre)
+        if livre < recorder.ESPACO_CRITICO:
+            self._log(f"ATENÇÃO: só restam {formata_tamanho(livre)} em disco "
+                      f"(~{horas * 60:.0f} min de live). A gravação vai parar "
+                      f"quando acabar.")
+        elif livre < recorder.ESPACO_CONFORTAVEL:
+            self._log(f"Aviso: {formata_tamanho(livre)} livres na pasta de saída "
+                      f"— cabem cerca de {horas:.1f}h de live.")
+
+    def _conferir_espaco_gravando(self) -> None:
+        """Vigia o disco durante a gravação, avisando uma vez só por sessão."""
+        if self._espaco_avisado:
+            return
+        livre = recorder.espaco_livre(self.outdir_var.get().strip())
+        if livre < 0 or livre >= recorder.ESPACO_CRITICO:
+            return
+        self._espaco_avisado = True
+        minutos = recorder.horas_que_cabem(livre) * 60
+        self._log(f"ATENÇÃO: o disco está acabando ({formata_tamanho(livre)}, "
+                  f"~{minutos:.0f} min). Libere espaço ou pare e salve agora — "
+                  f"o que já foi gravado está seguro.")
 
     def _falha_ao_armar(self, automatico: bool, titulo: str, msg: str,
                         erro: bool = False) -> None:
@@ -917,6 +1143,19 @@ class App(tk.Tk):
                     if getattr(value, "final_path", ""):
                         self._apply_state("concluido", "Gravação salva")
                         self._log_card(value)
+                        self._avisar_na_bandeja(
+                            "Gravação salva",
+                            f"{os.path.basename(value.final_path)}  —  "
+                            f"{formata_tamanho(value.bytes_written)}")
+                elif kind == "restaurar":
+                    self.restaurar_da_bandeja()
+                elif kind == "sair":
+                    # Pelo menu do icone: passa pelo mesmo caminho do X, com a
+                    # confirmacao caso haja gravacao em andamento.
+                    self.restaurar_da_bandeja()
+                    self._on_close()
+                elif kind == "versao":
+                    self._avisar_versao(str(value))
                 elif kind == "interrompidas":
                     ativas = set(self.recorder.partes_ativas)
                     for item in value:
@@ -972,10 +1211,21 @@ class App(tk.Tk):
             pass
         if self.preview_player is not None:
             self.preview_player.encerrar()
+        if self._tray is not None:
+            # Sem isso o icone fica fantasma na bandeja ate alguem passar o
+            # mouse por cima: o Windows so o remove quando repara que o dono
+            # morreu.
+            self._tray.encerrar()
         self.destroy()
 
 
 if __name__ == "__main__":
     if sys.version_info < (3, 9):
         sys.exit("Precisa de Python 3.9 ou mais novo.")
-    App().mainloop()
+    # Antes do App(): uma falha ao montar a janela e a que mais precisa de
+    # rastro, e num .exe --windowed nao ha stderr para onde ela iria.
+    diario.iniciar()
+    try:
+        App().mainloop()
+    finally:
+        diario.escrever("--- fim da sessão ---")

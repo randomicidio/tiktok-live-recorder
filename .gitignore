@@ -22,6 +22,10 @@ mpvlib/
 # Quadros e videos de referencia usados para medir o chat (255 MB)
 .analysis_frames/
 
+# Registro em arquivo, gerado em tempo de execucao
+registro.log
+registro.log.1
+
 # Conjunto de emoji (13 MB) - gerado por emoji_pack.py, chamado pelo build
 assets/emoji.zip
 

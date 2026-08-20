@@ -51,11 +51,13 @@ def _prefs() -> dict:
             _prefs_cache = dados if isinstance(dados, dict) else {}
         except (OSError, ValueError):
             _prefs_cache = {}
-        if "manuais" in _prefs_cache:
-            # Versão anterior guardava aqui os presentes postos à mão em cada
-            # vídeo. Não guarda mais - abrir o vídeo mostra o que está no
-            # .ttgifts e nada além disso -, então o que sobrou vai embora.
+        # Versões anteriores guardavam aqui os presentes postos à mão em cada
+        # vídeo e o último @ digitado. Não guardam mais - abrir o vídeo mostra
+        # o que está no .ttgifts e nada além disso -, então o que sobrou dessas
+        # chaves vai embora.
+        if _prefs_cache.keys() & {"manuais", "ultimo_de"}:
             _prefs_cache.pop("manuais", None)
+            _prefs_cache.pop("ultimo_de", None)
             _gravar_prefs()
     return _prefs_cache
 
@@ -1498,6 +1500,9 @@ class Editor(ttk.Frame):
         self._catalogo: list | None = None
         # Quem já foi procurado pelo @, para não perguntar duas vezes.
         self._perfis: dict = {}
+        # O último @ usado neste vídeo, para não redigitar a cada
+        # presente. Não vai para disco e some ao abrir outro arquivo.
+        self._ultimo_de = ""
         # O que as threads de fundo querem que a interface faça. Mexer em
         # widget de fora da thread do Tk é o tipo de erro que só aparece na
         # máquina do usuário, então nada vai direto: entra aqui e o `_tique`
@@ -2029,6 +2034,7 @@ class Editor(ttk.Frame):
         self._video_pronto_id += 1
         pronto_id = self._video_pronto_id
         self.arquivo_var.set(os.path.basename(caminho))
+        self._ultimo_de = ""
         # A defasagem é deste arquivo, não da pessoa: sai do caminho antes de o
         # player nascer, senão o vídeo novo herdaria o acerto do anterior.
         self.sinc_var.set("0")
@@ -2206,7 +2212,7 @@ class Editor(ttk.Frame):
             self, itens, tempo(self._posicao_atual()),
             self._adicionar_do_catalogo, self._outra_pasta,
             ao_buscar_perfil=self._buscar_perfil,
-            de_inicial=str(_prefs().get("ultimo_de") or ""),
+            de_inicial=self._ultimo_de,
             ao_atualizar=self._atualizar_catalogo,
             # Sem lista nenhuma, ou com uma de semanas atrás, vai buscar
             # sozinho: a alternativa é a pessoa achar que só existe aquilo.
@@ -2284,7 +2290,7 @@ class Editor(ttk.Frame):
         """
         pos = self._posicao_atual()
         if perfil is not None:
-            _lembrar("ultimo_de", perfil.usuario)
+            self._ultimo_de = perfil.usuario
         if item.em_disco:
             # Já aqui: ou dentro de um .ttgifts, ou baixada numa vez anterior.
             # Quem sabe dizer de onde ela sai é o catálogo, e neste caso ele

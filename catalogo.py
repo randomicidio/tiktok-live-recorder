@@ -90,7 +90,18 @@ class Item:
 
     @property
     def chave(self) -> tuple:
-        return (self.gift_id or self.nome.lower(), self.animacao)
+        """O que faz dois itens serem o mesmo presente na lista.
+
+        É o arquivo da animação, e nada mais. O TikTok tem o mesmo presente
+        cadastrado várias vezes - a "Arma de diamante" aparece com quatro ids -
+        e o mesmo arquivo ainda volta com o nome em português pela API e em
+        inglês pelo .ttgifts de uma gravação antiga. Pelo id ou pelo nome, a
+        lista repetia a mesma animação; pelo arquivo, ela aparece uma vez.
+
+        Duas escolhas só são duas quando os vídeos são diferentes - aí sim o
+        rótulo ganha (1), (2).
+        """
+        return (self.animacao,)
 
     @property
     def em_disco(self) -> bool:
@@ -412,7 +423,7 @@ def varrer(pastas: list[str]) -> list[Item]:
             continue
         novos: dict[tuple, Item] = {}
         for p in pac.com_animacao:
-            chave = (p.gift_id or p.nome.lower(), p.animacao)
+            chave = (p.animacao,)
             if chave in achados or chave in novos:
                 # Já temos essa animação; fica a primeira, que veio de um
                 # pacote que já sabemos abrir.

@@ -389,6 +389,81 @@ class Animacao:
             pass
 
 
+class SomDaAnimacao:
+    """O som das animações na prévia, num player só de áudio.
+
+    A libmpv da prévia toca o vídeo; esta outra toca o arquivo da animação, na
+    posição em que ela está. São dois relógios andando lado a lado, e o que os
+    mantém juntos é reencaixar o segundo quando a diferença passa de um piscar
+    de olhos - buscar a cada quadro custaria mais do que a diferença que
+    corrige, e ainda picotaria o som.
+
+    Na exportação quem faz esse trabalho é o ffmpeg, com `adelay`; aqui é isto.
+    O volume é o mesmo fader nos dois lugares.
+    """
+
+    DERIVA = 0.35              # segundos de diferença tolerados
+
+    def __init__(self):
+        self.mpv = None
+        self._arquivo = ""
+        self._volume = -1.0
+        try:
+            import mpv as libmpv
+            # `video=no`: é a mesma libmpv da prévia, mas esta não desenha nada.
+            self.mpv = libmpv.MPV(video="no", keep_open="yes", pause=True,
+                                  ytdl=False, osc=False, hr_seek="yes",
+                                  volume_max=200)
+        except Exception:                            # noqa: BLE001
+            self.mpv = None                          # sem som, a prévia segue
+
+    @property
+    def disponivel(self) -> bool:
+        return self.mpv is not None
+
+    def acompanhar(self, arquivo: str, posicao: float, volume: float) -> None:
+        """Toca `arquivo` no ponto em que a animação está, agora."""
+        if self.mpv is None:
+            return
+        try:
+            if arquivo != self._arquivo:
+                self._arquivo = arquivo
+                self.mpv["pause"] = True
+                self.mpv.command("loadfile", arquivo, "replace")
+                self.mpv.command("seek", f"{max(0.0, posicao):.3f}",
+                                 "absolute", "exact")
+                self.mpv["pause"] = False
+            else:
+                if abs(float(self.mpv.time_pos or 0.0) - posicao) > self.DERIVA:
+                    self.mpv.command("seek", f"{max(0.0, posicao):.3f}",
+                                     "absolute", "exact")
+                if self.mpv["pause"]:
+                    self.mpv["pause"] = False
+            if abs(volume - self._volume) > 0.001:
+                self._volume = volume
+                self.mpv["volume"] = max(0.0, min(200.0, volume * 100.0))
+        except Exception:                            # noqa: BLE001
+            pass
+
+    def calar(self) -> None:
+        """Cala sem descarregar: quem pausou vai retomar de onde parou."""
+        if self.mpv is None or not self._arquivo:
+            return
+        try:
+            if not self.mpv["pause"]:
+                self.mpv["pause"] = True
+        except Exception:                            # noqa: BLE001
+            pass
+
+    def encerrar(self) -> None:
+        if self.mpv:
+            try:
+                self.mpv.terminate()
+            except Exception:                        # noqa: BLE001
+                pass
+            self.mpv = None
+
+
 # ------------------------------------------------------ linha do tempo
 
 class LinhaDoTempo(tk.Canvas):
@@ -1365,6 +1440,9 @@ class Editor(ttk.Frame):
         self._agenda: list[compositor.Agendado] = []
 
         self._camada_anim = None
+        # Player só de som, criado quando a primeira animação com áudio
+        # aparece: quem nunca abre um vídeo com presente não paga por ele.
+        self._som: SomDaAnimacao | None = None
         self._camada_chat = None
         self._camada_contador = None
         self._animacoes: dict[int, Animacao] = {}
@@ -2354,6 +2432,8 @@ class Editor(ttk.Frame):
         aqui é o que impede uma sobreposição de continuar apontando para um
         player que já foi encerrado.
         """
+        if self._som is not None:
+            self._som.calar()
         for camada in (self._camada_anim, self._camada_chat, self._camada_contador):
             if camada is not None:
                 camada.encerrar()
@@ -2537,6 +2617,31 @@ class Editor(ttk.Frame):
                 if antiga is not None:
                     antiga.fechar()
         self._preparando.discard(chave)
+
+    def _acompanhar_som(self, pos: float) -> None:
+        """O som da animação segue a agulha, como o desenho dela.
+
+        Mesma regra da exportação: entra se a camada está ligada, se a
+        animação tem áudio e se o fader não está no zero - e é o fader que diz
+        o volume. Fora disso, cala; parado ou arrastando a barra também, senão
+        o som continuaria correndo sozinho com a imagem parada.
+        """
+        item = self._animacao_no_instante(pos) if self._agenda else None
+        toca = (item is not None and self.anim_var.get()
+                and float(self.volume_var.get()) > 0.001
+                and bool(item.cfg.get("has_audio"))
+                and self.player.tocando and not self.linha.interagindo)
+        if not toca:
+            if self._som is not None:
+                self._som.calar()
+            return
+        if self._som is None:
+            self._som = SomDaAnimacao()
+            if not self._som.disponivel:
+                self.emit("log", "Prévia: sem som para as animações "
+                                 "(a libmpv não abriu um segundo player).")
+        self._som.acompanhar(item.arquivo, pos - item.inicio,
+                             float(self.volume_var.get()))
 
     def _desenhar_animacao(self, pos: float, dx: float, dy: float, escala: float) -> None:
         if not self._agenda:
@@ -2976,6 +3081,7 @@ class Editor(ttk.Frame):
         if not self._escala_anim:
             self._escala_anim = escala
 
+        self._acompanhar_som(pos)
         self._desenhar_animacao(pos, dx, dy, self._escala_anim)
         if self.chat_var.get() and self._pintor is not None:
             self._camada_chat, self._chat_pronto = self._desenhar_painel(
@@ -3106,6 +3212,9 @@ class Editor(ttk.Frame):
     def encerrar(self) -> None:
         self._cancelar = True
         self._descartar_camadas()
+        if self._som is not None:
+            self._som.encerrar()
+            self._som = None
         if self.player:
             self.player.encerrar()
         if self._temp_anim:

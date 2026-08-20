@@ -307,6 +307,32 @@ estava. Na exportação o arquivo entra duas vezes, com o corte do áudio
 deslocado, para o som seguir inteiro nas duas pontas do trecho em vez de abrir
 um silêncio no começo.
 
+**Pôr uma animação à mão.** Embaixo da lista de presentes, **+ Adicionar
+animação...** abre o catálogo do TikTok — todos os presentes que têm animação de
+tela cheia, com o ícone oficial e o nome em português. Escolhido o presente, a
+animação entra na posição em que o vídeo está parado e se comporta como se
+tivesse acontecido na live: espera a anterior acabar, aparece na prévia e sai no
+MP4. É o que salva um replay baixado de outro lugar, que não tem `.ttgifts` e,
+portanto, não tem presente nenhum para compor.
+
+O campo **De @** é opcional: com ele, o nome e a foto de quem mandou vêm do
+TikTok e o cartão do contador fica igual ao de um presente de verdade. Sem ele,
+o cartão diz apenas "Alguém".
+
+A lista é buscada uma vez e fica guardada (`presentes.json`, ao lado do
+`config.json`), então a segunda abertura é instantânea; ela é renovada sozinha
+depois de uma semana, e o botão **Atualizar do TikTok** força na hora. Os
+ícones ficam em `icones/` e cada animação é baixada só quando alguém a escolhe,
+para `animacoes/`. Os `.ttgifts` das suas gravações entram na mesma lista: são
+eles que respondem sem internet, e são a única fonte de um presente que já saiu
+de catálogo.
+
+Na lista, o que foi posto à mão vem com **`*`** e pode ser removido (botão
+**Remover** ou a tecla Delete) — o que veio da live, não: o pacote é o registro
+do que aconteceu, e o editor não reescreve isso. O que você adicionar fica
+guardado por vídeo no `editor.json`, então reabrir o mesmo arquivo devolve o
+trabalho.
+
 **A prévia é a mesma coisa que o arquivo.** O chat e o contador são desenhados
 pelo mesmo código que a exportação usa, então o que aparece na tela é o que sai
 no MP4 — não é uma aproximação.
@@ -351,6 +377,8 @@ O que foi copiado da referência:
 | `recorder.py` | Controla o ffmpeg, reconexão, montagem do MP4 e miniaturas |
 | `gift_log.py` | Registra presentes, chat e emotes durante a live |
 | `pacote.py` | Lê e escreve o `.ttgifts` que acompanha o vídeo |
+| `catalogo.py` | Lista de presentes do TikTok e dos pacotes, para adicionar à mão |
+| `effects_api.py` | Resolve e baixa as animações oficiais dos presentes |
 | `editor.py` | Aba do editor: prévia com as camadas e exportação |
 | `compositor.py` | Monta o vídeo final com as animações e o chat |
 | `tipografia.py` | Desenha texto de qualquer idioma e os emoji |

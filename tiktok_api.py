@@ -158,6 +158,55 @@ def _streams_from_flv_map(flv_map: dict) -> dict[str, StreamOption]:
     return out
 
 
+@dataclass
+class Perfil:
+    """Quem é um @: o nome que aparece e a foto."""
+
+    usuario: str
+    apelido: str = ""
+    avatar: str = ""
+
+
+def perfil(username: str, session: requests.Session | None = None) -> Perfil:
+    """Nome e foto de um @, esteja a pessoa ao vivo ou não.
+
+    O mesmo endpoint que responde sobre a live devolve o cartão do usuário, e
+    ele responde igual com a live desligada - que é o caso de quem manda um
+    presente num replay montado no editor.
+    """
+    user = username.strip().lstrip("@")
+    if not user:
+        raise TikTokError("Informe o @ da pessoa.")
+
+    s = session or make_session()
+    try:
+        r = s.get(
+            "https://www.tiktok.com/api-live/user/room/",
+            params={"aid": "1988", "sourceType": "54", "uniqueId": user},
+            timeout=20,
+        )
+        payload = r.json()
+    except requests.RequestException as e:
+        raise TikTokError(f"Sem resposta do TikTok: {e}") from e
+    except ValueError as e:
+        raise TikTokError("Resposta do TikTok não veio em JSON "
+                          "(bloqueio ou captcha?).") from e
+
+    no = ((payload.get("data") or {}).get("user") or {})
+    apelido = str(no.get("nickname") or "")
+    if not apelido and not no.get("avatarThumb"):
+        raise TikTokError(f"Não achei a conta @{user}.")
+    # Da maior para a menor: a foto entra num círculo pequeno, mas o cartão do
+    # contador cresce com a resolução do vídeo.
+    avatar = ""
+    for chave in ("avatarLarger", "avatarMedium", "avatarThumb"):
+        avatar = str(no.get(chave) or "")
+        if avatar:
+            break
+    return Perfil(usuario=str(no.get("uniqueId") or user),
+                  apelido=apelido, avatar=avatar)
+
+
 def resolve(username: str, session: requests.Session | None = None) -> LiveInfo:
     """Consulta o TikTok e devolve o estado atual da live de `username`."""
     user = username.strip().lstrip("@")

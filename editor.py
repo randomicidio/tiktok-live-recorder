@@ -18,6 +18,7 @@ import io
 import json
 import mmap
 import os
+import queue
 import subprocess
 import threading
 import time
@@ -29,6 +30,7 @@ import catalogo as catalogo_mod
 import compositor
 import pacote as pacote_mod
 import resources
+import tiktok_api
 
 _SEM_JANELA = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -972,24 +974,42 @@ def _extrair_onda(caminho: str, hz: float = 40.0, parcial=None):
 class EscolhaDePresente(tk.Toplevel):
     """A lista do que dá para pôr por cima do vídeo, com os ícones oficiais.
 
-    O catálogo sai dos pacotes que já estão no disco (veja `catalogo.py`), então
-    o que aparece aqui é o que esta máquina consegue mesmo compor - nada de
-    oferecer um presente cuja animação teria de ser baixada na hora.
+    O catálogo é o do próprio TikTok (veja `catalogo.py`): todos os presentes
+    com animação, mesmo os que nunca passaram por uma gravação sua. A lista
+    fica guardada em disco, então abre na hora; a animação escolhida é baixada
+    na hora de usar e também fica.
     """
 
     ICONE = 28
 
-    def __init__(self, dono, itens, quando: str, ao_escolher, ao_procurar):
+    def __init__(self, dono, itens, quando: str, ao_escolher, ao_procurar,
+                 ao_buscar_perfil=None, de_inicial: str = "",
+                 ao_atualizar=None, buscar_ao_abrir: bool = False):
         super().__init__(dono)
         self.title("Adicionar animação de presente")
         self.transient(dono.winfo_toplevel())
         self.resizable(True, True)
+        self._dono = dono
         self._itens = itens
         self._ao_escolher = ao_escolher
         self._ao_procurar = ao_procurar
+        self._ao_buscar_perfil = ao_buscar_perfil
+        self._ao_atualizar = ao_atualizar
+        self._atualizando = False
+        # Sobe a cada vez que a lista é refeita: o que a thread dos ícones
+        # trouxer de uma lista antiga não tem mais onde entrar.
+        self._geracao = 0
         self._fotos = {}                 # o Tk descarta a imagem sem referência
-        self._ordem = ("nome", False)
+        self._foto_de = None
+        # A lista nasce do mais caro para o mais barato: é o valor em
+        # moedas que diz o tamanho da animação, e é por ele que se procura
+        # o presente. Clicar no cabeçalho inverte, ou ordena por nome.
+        self._ordem = ("diamantes", False)
         self._mostrados: list = []
+        # Perfil já resolvido e de quem ele é: digitar outro @ invalida.
+        self._perfil = None
+        self._perfil_de = ""
+        self._procurando = False
 
         corpo = ttk.Frame(self, padding=10)
         corpo.pack(fill="both", expand=True)
@@ -1025,19 +1045,41 @@ class EscolhaDePresente(tk.Toplevel):
         self.arvore.bind("<Double-1>", lambda _e: self._escolher())
         self.arvore.bind("<Return>", lambda _e: self._escolher())
 
+        # Quem mandou. O nome e a foto vêm do TikTok pelo @, e é o que faz o
+        # cartão do contador ficar igual ao de um presente de verdade.
+        quem = ttk.Frame(corpo)
+        quem.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        quem.columnconfigure(3, weight=1)
+        ttk.Label(quem, text="De  @").grid(row=0, column=0)
+        self.de_var = tk.StringVar(value=de_inicial)
+        self.campo_de = ttk.Entry(quem, textvariable=self.de_var, width=18)
+        self.campo_de.grid(row=0, column=1, padx=(2, 6))
+        self.campo_de.bind("<Return>", lambda _e: self._buscar())
+        ttk.Button(quem, text="buscar", width=8,
+                   command=self._buscar).grid(row=0, column=2)
+        self.retrato = ttk.Label(quem)
+        self.retrato.grid(row=0, column=3, sticky="e", padx=(10, 6))
+        self.quem_var = tk.StringVar(value="")
+        ttk.Label(quem, textvariable=self.quem_var,
+                  foreground="#0f766e").grid(row=0, column=4, sticky="e")
+        self.de_var.trace_add("write", lambda *_a: self._mudou_o_de())
+
         self.recado = ttk.Label(corpo, foreground="#64748b", wraplength=430)
-        self.recado.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.recado.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         rodape = ttk.Frame(corpo)
-        rodape.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        rodape.columnconfigure(1, weight=1)
+        rodape.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        rodape.columnconfigure(2, weight=1)
+        self.btn_atualizar = ttk.Button(rodape, text="Atualizar do TikTok",
+                                        command=self.atualizar_do_tiktok)
+        self.btn_atualizar.grid(row=0, column=0)
         ttk.Button(rodape, text="Procurar noutra pasta...",
-                   command=self._procurar).grid(row=0, column=0)
+                   command=self._procurar).grid(row=0, column=1, padx=(6, 0))
         ttk.Button(rodape, text="Cancelar",
-                   command=self.destroy).grid(row=0, column=2, padx=(0, 6))
+                   command=self.destroy).grid(row=0, column=3, padx=(0, 6))
         self.btn_ok = ttk.Button(rodape, text=f"Adicionar em {quando}",
                                  command=self._escolher, state="disabled")
-        self.btn_ok.grid(row=0, column=3)
+        self.btn_ok.grid(row=0, column=4)
         self.arvore.bind("<<TreeviewSelect>>", lambda _e: self._selecionou())
 
         self._encher()
@@ -1050,6 +1092,10 @@ class EscolhaDePresente(tk.Toplevel):
         y = raiz.winfo_rooty() + 60
         self.geometry(f"+{max(0, x)}+{max(0, y)}")
         self.grab_set()
+        if buscar_ao_abrir:
+            # Primeira vez, ou lista velha: procura sozinho, sem esperar
+            # que alguém descubra o botão.
+            self.after(150, self.atualizar_do_tiktok)
 
     # ------------------------------------------------------------ conteúdo
 
@@ -1058,20 +1104,58 @@ class EscolhaDePresente(tk.Toplevel):
         self._encher()
 
     def _foto(self, item):
-        """O ícone do presente como imagem do Tk, ou None se não der."""
+        """O ícone do presente como imagem do Tk, com o que já está em memória."""
         if item.animacao in self._fotos:
             return self._fotos[item.animacao]
+        if not item.icone_bytes:
+            return None                  # ainda não chegou; a thread põe depois
         foto = None
-        if item.icone_bytes:
-            try:
-                from PIL import Image, ImageTk
-                img = Image.open(io.BytesIO(item.icone_bytes)).convert("RGBA")
-                img = img.resize((self.ICONE, self.ICONE), Image.LANCZOS)
-                foto = ImageTk.PhotoImage(img, master=self)
-            except Exception:                        # noqa: BLE001
-                foto = None                          # sem PIL a lista vai sem ícone
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open(io.BytesIO(item.icone_bytes)).convert("RGBA")
+            img = img.resize((self.ICONE, self.ICONE), Image.LANCZOS)
+            foto = ImageTk.PhotoImage(img, master=self)
+        except Exception:                            # noqa: BLE001
+            foto = None                              # sem PIL a lista vai sem ícone
         self._fotos[item.animacao] = foto
         return foto
+
+    def _buscar_icones(self, itens, geracao: int) -> None:
+        """Traz os ícones que faltam, sem segurar a janela.
+
+        Os do disco chegam na primeira volta; os que precisam de download
+        entram um a um, e a lista já está utilizável antes do primeiro chegar.
+        """
+        faltando = [i for i in itens if not i.icone_bytes and i.icone_url]
+        if not faltando:
+            return
+
+        def trabalho():
+            from concurrent.futures import ThreadPoolExecutor
+            sessao = catalogo_mod._sessao_web()
+
+            def um(item):
+                return item if catalogo_mod.icone(item, sessao) else None
+
+            with ThreadPoolExecutor(max_workers=12) as pool:
+                # Na ordem da lista: os de cima são os que estão à vista.
+                for item in pool.map(um, faltando):
+                    if item is None or geracao != self._geracao:
+                        continue
+                    self._dono.na_interface(self._pintar_icone, item, geracao)
+
+        threading.Thread(target=trabalho, daemon=True).start()
+
+    def _pintar_icone(self, item, geracao: int) -> None:
+        if geracao != self._geracao or not self.winfo_exists():
+            return
+        try:
+            linha = self._mostrados.index(item)
+        except ValueError:
+            return
+        foto = self._foto(item)
+        if foto is not None:
+            self.arvore.item(str(linha), image=foto)
 
     def _encher(self) -> None:
         procura = self.filtro_var.get().strip().lower()
@@ -1086,6 +1170,7 @@ class EscolhaDePresente(tk.Toplevel):
                        reverse=invertido)
         self.arvore.delete(*self.arvore.get_children())
         self._mostrados = itens
+        self._geracao += 1
         for n, item in enumerate(itens):
             foto = self._foto(item)
             self.arvore.insert("", "end", iid=str(n), text=f" {item.rotulo}",
@@ -1093,17 +1178,20 @@ class EscolhaDePresente(tk.Toplevel):
                                values=(f"{item.diamantes:,}".replace(",", "."),))
         if not self._itens:
             self.recado.configure(
-                text="Nenhum pacote de presentes encontrado. As animações vêm "
-                     "dos .ttgifts das suas gravações - aponte para a pasta "
-                     "onde elas estão.")
+                foreground="#64748b",
+                text="Lista vazia por enquanto. Ela vem do TikTok - use "
+                     "\u201cAtualizar do TikTok\u201d - ou dos .ttgifts das "
+                     "suas gravações.")
         elif not itens:
             self.recado.configure(text="Nenhum presente com esse nome.")
         else:
             self.recado.configure(
+                foreground="#64748b",
                 text=f"{len(itens)} de {len(self._itens)} presentes. "
                      "A animação entra na posição atual do vídeo e espera a "
-                     "anterior acabar, como acontece na live.")
+                     "anterior acabar, como acontece na live. O @ é opcional.")
         self._selecionou()
+        self._buscar_icones(itens, self._geracao)
 
     def _ordenar(self, chave: str) -> None:
         atual, invertido = self._ordem
@@ -1113,6 +1201,99 @@ class EscolhaDePresente(tk.Toplevel):
     def _selecionou(self) -> None:
         self.btn_ok.configure(
             state="normal" if self.arvore.selection() else "disabled")
+
+    # ---------------------------------------------------- lista do TikTok
+
+    def atualizar_do_tiktok(self) -> None:
+        """Vai buscar a lista inteira de presentes. A resposta volta depois."""
+        if self._ao_atualizar is None or self._atualizando:
+            return
+        self._atualizando = True
+        self.btn_atualizar.configure(state="disabled")
+        self.recado.configure(foreground="#64748b",
+                              text="Buscando a lista de presentes do TikTok...")
+        self._ao_atualizar(self._andou_a_busca, self._chegou_a_lista)
+
+    def _andou_a_busca(self, texto: str) -> None:
+        if self.winfo_exists():
+            self.recado.configure(foreground="#64748b", text=texto)
+
+    def _chegou_a_lista(self, itens, erro: str) -> None:
+        if not self.winfo_exists():
+            return
+        self._atualizando = False
+        self.btn_atualizar.configure(state="normal")
+        if erro:
+            self.recado.configure(
+                foreground="#b45309",
+                text=f"{erro} A lista mostrada é a que já estava aqui.")
+            return
+        self.trocar_itens(itens)
+
+    # -------------------------------------------------- quem mandou
+
+    def _mudou_o_de(self) -> None:
+        """Trocou o @: o nome e a foto de antes já não são de quem está ali."""
+        if self.de_var.get().strip().lstrip("@") != self._perfil_de:
+            self._perfil = None
+            self._perfil_de = ""
+            self.quem_var.set("")
+            self.retrato.configure(image="")
+            self._foto_de = None
+
+    def _buscar(self, depois=None) -> None:
+        """Pergunta ao TikTok quem é esse @. A resposta chega pelo `_chegou`."""
+        usuario = self.de_var.get().strip().lstrip("@")
+        if not usuario or self._ao_buscar_perfil is None:
+            if depois:
+                depois()
+            return
+        if self._perfil is not None and self._perfil_de == usuario:
+            if depois:
+                depois()
+            return
+        if self._procurando:
+            return
+        self._procurando = True
+        self.btn_ok.configure(state="disabled")
+        self.quem_var.set("procurando...")
+        self._ao_buscar_perfil(
+            usuario,
+            lambda perfil, foto, erro: self._chegou(usuario, perfil, foto,
+                                                    erro, depois))
+
+    def _chegou(self, usuario, perfil, foto, erro, depois=None) -> None:
+        """Volta da busca, já na thread da interface."""
+        if not self.winfo_exists():
+            return
+        self._procurando = False
+        self._selecionou()
+        if perfil is None:
+            self.quem_var.set("")
+            self.recado.configure(
+                foreground="#b45309",
+                text=f"{erro} Confira o @, ou deixe o campo vazio para "
+                     "adicionar sem remetente.")
+            return
+        self._perfil = perfil
+        self._perfil_de = usuario
+        self.quem_var.set(perfil.apelido or f"@{perfil.usuario}")
+        self._foto_de = self._retrato(foto)
+        self.retrato.configure(image=self._foto_de or "")
+        if depois:
+            depois()
+
+    def _retrato(self, dados: bytes):
+        """A foto do perfil como imagem do Tk, redonda o suficiente para o olho."""
+        if not dados:
+            return None
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open(io.BytesIO(dados)).convert("RGBA")
+            img = img.resize((self.ICONE, self.ICONE), Image.LANCZOS)
+            return ImageTk.PhotoImage(img, master=self)
+        except Exception:                            # noqa: BLE001
+            return None
 
     def _escolhido(self):
         sel = self.arvore.selection()
@@ -1127,8 +1308,21 @@ class EscolhaDePresente(tk.Toplevel):
         item = self._escolhido()
         if item is None:
             return
+        usuario = self.de_var.get().strip().lstrip("@")
+        if usuario and (self._perfil is None or self._perfil_de != usuario):
+            # O @ foi digitado e ainda não foi procurado: adiciona depois
+            # que a resposta chegar, senão o presente sairia sem a foto.
+            self._buscar(depois=self._escolher_agora)
+            return
+        self._escolher_agora()
+
+    def _escolher_agora(self) -> None:
+        item = self._escolhido()
+        if item is None or not self.winfo_exists():
+            return
+        perfil = self._perfil
         self.destroy()
-        self._ao_escolher(item)
+        self._ao_escolher(item, perfil)
 
     def _procurar(self) -> None:
         # A varredura da pasta nova é do editor: é ele que sabe lembrar dela.
@@ -1208,8 +1402,15 @@ class Editor(ttk.Frame):
         # Partes que aparecem e somem conforme o tamanho da janela.
         self._dicas_a_mostra = True
         self._barra_do_painel = False
-        # Catálogo de presentes do disco, varrido uma vez por sessão.
+        # Catálogo de presentes, montado uma vez por sessão.
         self._catalogo: list | None = None
+        # Quem já foi procurado pelo @, para não perguntar duas vezes.
+        self._perfis: dict = {}
+        # O que as threads de fundo querem que a interface faça. Mexer em
+        # widget de fora da thread do Tk é o tipo de erro que só aparece na
+        # máquina do usuário, então nada vai direto: entra aqui e o `_tique`
+        # executa no lugar certo.
+        self._recados: queue.Queue = queue.Queue()
         # Invalida preparações em segundo plano quando outro vídeo é aberto.
         self._carregamento_id = 0
         self._video_pronto_id = 0
@@ -1892,11 +2093,19 @@ class Editor(ttk.Frame):
             [e for e in extras if e])
 
     def _varrer_catalogo(self, forcar: bool = False) -> list:
+        """O catálogo sem tocar na rede: a lista guardada mais os pacotes.
+
+        A ordem importa - o que veio do TikTok manda, e os pacotes completam
+        com o que já está em disco (e com o presente que saiu de catálogo e só
+        existe nas suas gravações).
+        """
         if self._catalogo is None or forcar:
-            self._catalogo = catalogo_mod.varrer(self._pastas_do_catalogo())
+            self._catalogo = catalogo_mod.juntar(
+                catalogo_mod.guardados(),
+                catalogo_mod.varrer(self._pastas_do_catalogo()))
             self.emit("log",
                       f"Editor: {len(self._catalogo)} presentes com animação "
-                      "disponíveis para adicionar.")
+                      "para escolher.")
         return self._catalogo
 
     def adicionar_animacao(self) -> None:
@@ -1906,8 +2115,66 @@ class Editor(ttk.Frame):
                                 "Abra o vídeo antes de adicionar a animação.")
             return
         itens = self._varrer_catalogo()
-        EscolhaDePresente(self, itens, tempo(self._posicao_atual()),
-                          self._adicionar_do_catalogo, self._outra_pasta)
+        EscolhaDePresente(
+            self, itens, tempo(self._posicao_atual()),
+            self._adicionar_do_catalogo, self._outra_pasta,
+            ao_buscar_perfil=self._buscar_perfil,
+            de_inicial=str(_prefs().get("ultimo_de") or ""),
+            ao_atualizar=self._atualizar_catalogo,
+            # Sem lista nenhuma, ou com uma de semanas atrás, vai buscar
+            # sozinho: a alternativa é a pessoa achar que só existe aquilo.
+            buscar_ao_abrir=not itens or catalogo_mod.esta_velha())
+
+    def _atualizar_catalogo(self, andou, pronto) -> None:
+        """Busca a lista do TikTok em segundo plano e avisa quando chega."""
+        def trabalho():
+            erro = ""
+            itens = []
+            try:
+                itens = catalogo_mod.da_api(
+                    progresso=lambda t: self.na_interface(andou, t))
+                catalogo_mod.guardar(itens)
+            except catalogo_mod.CatalogoError as e:
+                erro = str(e)
+            except Exception as e:                   # noqa: BLE001
+                erro = f"Não consegui falar com o TikTok: {e}"
+            if itens:
+                self._catalogo = catalogo_mod.juntar(
+                    itens, catalogo_mod.varrer(self._pastas_do_catalogo()))
+                self.emit("log", f"Editor: catálogo do TikTok com "
+                                 f"{len(self._catalogo)} presentes.")
+            self.na_interface(pronto, self._catalogo or [], erro)
+
+        threading.Thread(target=trabalho, daemon=True).start()
+
+    def _buscar_perfil(self, usuario: str, pronto) -> None:
+        """Procura o @ no TikTok - nome e foto - fora da thread da interface."""
+        guardado = self._perfis.get(usuario.lower())
+        if guardado is not None:
+            pronto(guardado[0], guardado[1], "")
+            return
+
+        def trabalho():
+            import requests
+
+            perfil, erro, foto = None, "", b""
+            try:
+                perfil = tiktok_api.perfil(usuario)
+            except tiktok_api.TikTokError as e:
+                erro = str(e)
+            except Exception as e:                   # noqa: BLE001
+                erro = f"Não consegui falar com o TikTok: {e}"
+            if perfil is not None and perfil.avatar:
+                try:
+                    r = requests.get(perfil.avatar, timeout=10)
+                    foto = r.content if r.status_code == 200 else b""
+                except requests.RequestException:
+                    foto = b""
+            if perfil is not None:
+                self._perfis[usuario.lower()] = (perfil, foto)
+            self.na_interface(pronto, perfil, foto, erro)
+
+        threading.Thread(target=trabalho, daemon=True).start()
 
     def _outra_pasta(self):
         """Pergunta outra pasta de gravações e varre de novo. None = desistiu."""
@@ -1920,22 +2187,64 @@ class Editor(ttk.Frame):
         _lembrar("pasta_catalogo", pasta)
         return self._varrer_catalogo(forcar=True)
 
-    def _adicionar_do_catalogo(self, item) -> None:
+    def _adicionar_do_catalogo(self, item, perfil=None) -> None:
         """Põe o presente escolhido na posição atual do vídeo.
+
+        A animação pode ainda não estar aqui - o catálogo é o do TikTok, não o
+        do seu disco -, e nesse caso ela é baixada antes, em segundo plano. A
+        posição é a de agora, e não a de quando o download terminar: quem
+        escolheu estava olhando para este quadro.
+        """
+        pos = self._posicao_atual()
+        if perfil is not None:
+            _lembrar("ultimo_de", perfil.usuario)
+        if item.em_disco:
+            self._por_no_video(item, pos, perfil, item.pacote)
+            return
+        self.aviso.set(f"Baixando a animação de {item.rotulo}...")
+
+        def trabalho():
+            try:
+                origem = catalogo_mod.garantir_animacao(item)
+                erro = ""
+            except catalogo_mod.CatalogoError as e:
+                origem, erro = "", str(e)
+            except Exception as e:                   # noqa: BLE001
+                origem, erro = "", f"Não consegui baixar a animação: {e}"
+            self.na_interface(self._baixou, item, pos, perfil, origem, erro)
+
+        threading.Thread(target=trabalho, daemon=True).start()
+
+    def _baixou(self, item, pos: float, perfil, origem: str, erro: str) -> None:
+        """Volta do download, já na thread da interface."""
+        if erro or not origem:
+            self.aviso.set(erro or f"Não achei a animação de {item.rotulo}.")
+            self.emit("log", f"Editor: {erro or 'animação não veio'}.")
+            return
+        self.aviso.set("")
+        self._por_no_video(item, pos, perfil, origem)
+
+    def _por_no_video(self, item, pos: float, perfil, origem: str) -> None:
+        """Com a animação em mãos, o presente entra na linha do tempo.
 
         Daqui para a frente ele é um presente como outro qualquer: entra na
         fila das animações, aparece na prévia e sai no vídeo exportado. O que
         o distingue é `manual`, que é o que permite tirá-lo de novo.
         """
-        pos = self._posicao_atual()
         if self.pacote is None:
             # Vídeo sem pacote: um de mentira, só para carregar o que for
             # posto à mão. Nada disso vai para disco.
             self.pacote = pacote_mod.Pacote(caminho="", video=self.video)
+        # O ícone do pacote é um identificador de dentro dele; o do catálogo é
+        # um arquivo que acabou de ser guardado. O contador entende os dois.
+        icone = item.icone if item.pacote else catalogo_mod.arquivo_do_icone(item)
         p = pacote_mod.Presente(
             t=pos - self.pacote.offset_segundos,
             nome=item.rotulo, gift_id=item.gift_id, diamantes=item.diamantes,
-            icone=item.icone, animacao=item.animacao, origem=item.pacote,
+            icone=icone, animacao=item.animacao, origem=origem,
+            de=perfil.usuario if perfil else "",
+            apelido=perfil.apelido if perfil else "",
+            avatar=perfil.avatar if perfil else "",
             manual=True)
         self.pacote.presentes.append(p)
         self._apos_mexer_nos_manuais(f"{item.rotulo} em {tempo(pos)}")
@@ -1990,7 +2299,8 @@ class Editor(ttk.Frame):
         manuais = [
             {"t": p.t, "nome": p.nome, "gift_id": p.gift_id,
              "diamantes": p.diamantes, "icone": p.icone,
-             "animacao": p.animacao, "origem": p.origem}
+             "animacao": p.animacao, "origem": p.origem,
+             "de": p.de, "apelido": p.apelido, "avatar": p.avatar}
             for p in (self.pacote.presentes if self.pacote else [])
             if getattr(p, "manual", False)
         ]
@@ -2026,7 +2336,7 @@ class Editor(ttk.Frame):
             # A gravação de onde a animação sai pode ter sido apagada desde
             # então; sem ela não há o que compor.
             if not p.animacao or not os.path.exists(p.origem):
-                continue
+                continue          # a gravação (ou a pasta) sumiu daqui
             self.pacote.presentes.append(p)
             voltaram += 1
         if voltaram:
@@ -2558,9 +2868,27 @@ class Editor(ttk.Frame):
 
     # ------------------------------------------------------------- tiques
 
+    def na_interface(self, funcao, *args) -> None:
+        """Pede que isto rode na thread do Tk. Pode ser chamada de qualquer uma."""
+        self._recados.put((funcao, args))
+
+    def _entregar_recados(self) -> None:
+        while True:
+            try:
+                funcao, args = self._recados.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                funcao(*args)
+            except tk.TclError:
+                return          # janela fechando: o resto não interessa
+            except Exception as e:                   # noqa: BLE001
+                self.emit("log", f"Editor: {e}")
+
     def _tique(self) -> None:
         """Ritmo lento: rótulos, avisos e o que chegou das threads de fundo."""
         try:
+            self._entregar_recados()
             onda = self._onda_pronta
             if onda is not None:
                 self._onda_pronta = None

@@ -141,6 +141,30 @@ class CatalogoDeAnimacoes(unittest.TestCase):
                                 "animacao": "md5-1"})
         self.assertEqual(len(catalogo.varrer([self.gravacoes])), 1)
 
+    def test_junta_api_e_pacotes_sem_repetir(self):
+        # O mesmo presente pode vir das duas fontes: fica um só, sabendo que a
+        # animação já está no pacote e não precisa ser baixada.
+        da_api = catalogo.Item(nome="Leão", gift_id=1, diamantes=100,
+                               effect_id=9, animacao="md5-1",
+                               icone_url="http://exemplo/1.png")
+        do_pacote = catalogo.Item(nome="Leão", gift_id=1, diamantes=100,
+                                  animacao="md5-1", pacote="C:/live1.ttgifts")
+        juntos = catalogo.juntar([da_api], [do_pacote])
+        self.assertEqual(len(juntos), 1)
+        self.assertEqual(juntos[0].effect_id, 9)
+        self.assertEqual(juntos[0].pacote, "C:/live1.ttgifts")
+
+    def test_numera_as_variacoes_do_mesmo_presente(self):
+        # O TikTok troca o vídeo conforme a quantidade enviada; as duas valem
+        # como escolha, e o nome precisa distinguir uma da outra.
+        itens = catalogo.juntar([
+            catalogo.Item(nome="Leão", gift_id=1, animacao="md5-1"),
+            catalogo.Item(nome="Leão", gift_id=1, animacao="md5-2"),
+            catalogo.Item(nome="Rosa", gift_id=2, animacao="md5-3"),
+        ])
+        rotulos = sorted(i.rotulo for i in itens)
+        self.assertEqual(rotulos, ["Leão (1)", "Leão (2)", "Rosa"])
+
     def test_animacao_sai_do_pacote_de_origem(self):
         # É isso que permite pôr um presente num vídeo que não tem pacote
         # nenhum: o presente aponta para a gravação de onde a animação sai.

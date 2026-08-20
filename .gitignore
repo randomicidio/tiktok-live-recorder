@@ -11,6 +11,10 @@ __pycache__/
 # Dados locais (config guarda o seu @; gravações são pesadas)
 config.json
 editor.json
+# Catalogo de presentes e o que ele baixa (lista, icones, animacoes)
+presentes.json
+icones/
+animacoes/
 Gravacoes/
 Teste1/
 ProgramaVersao1/

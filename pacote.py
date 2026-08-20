@@ -149,6 +149,23 @@ class Pacote:
         """
         return getattr(presente, "origem", "") or self.caminho
 
+    def _animacao_solta(self, presente: Presente) -> str:
+        """A animação já em disco, fora de pacote nenhum.
+
+        É o caso do presente escolhido no catálogo do TikTok: a animação foi
+        baixada para uma pasta com uma subpasta por `video_md5`, e `origem`
+        aponta para ela em vez de para um .ttgifts.
+        """
+        fonte = getattr(presente, "origem", "")
+        if not fonte or not os.path.isdir(fonte):
+            return ""
+        pasta = os.path.join(fonte, presente.animacao)
+        if os.path.exists(os.path.join(pasta, "config.json")):
+            return pasta
+        if os.path.exists(os.path.join(fonte, "config.json")):
+            return fonte
+        return ""
+
     def abrir_figura(self, ident: str, origem: str = ""):
         """A figura de um emote ou de um presente, ou None se não veio no pacote.
 
@@ -160,9 +177,15 @@ class Pacote:
         img = None
         try:
             from PIL import Image
-            with zipfile.ZipFile(origem or self.caminho) as z:
-                with z.open(f"{PASTA_FIGURAS}/{ident}.png") as fh:
+            if ident and os.path.isfile(ident):
+                # Um caminho, e não um identificador: é o ícone que o editor
+                # baixou do catálogo do TikTok, que não vive em pacote nenhum.
+                with open(ident, "rb") as fh:
                     img = Image.open(io.BytesIO(fh.read())).convert("RGBA")
+            else:
+                with zipfile.ZipFile(origem or self.caminho) as z:
+                    with z.open(f"{PASTA_FIGURAS}/{ident}.png") as fh:
+                        img = Image.open(io.BytesIO(fh.read())).convert("RGBA")
         except (KeyError, zipfile.BadZipFile, OSError, ValueError):
             img = None
         self._figuras[chave] = img
@@ -172,6 +195,9 @@ class Pacote:
         """Coloca a animação desse presente em disco e devolve a pasta."""
         if not presente.animacao:
             return ""
+        solta = self._animacao_solta(presente)
+        if solta:
+            return solta               # já em disco: não há o que extrair
         alvo = os.path.join(destino, presente.animacao)
         if os.path.exists(os.path.join(alvo, "config.json")):
             return alvo
@@ -196,6 +222,14 @@ class Pacote:
         """Geometria da composição, lida direto do pacote."""
         if not presente.animacao:
             return {}
+        solta = self._animacao_solta(presente)
+        if solta:
+            try:
+                with open(os.path.join(solta, "config.json"),
+                          encoding="utf-8") as fh:
+                    return (json.load(fh) or {}).get("portrait") or {}
+            except (OSError, ValueError):
+                return {}
         alvo = f"{PASTA_ANIM}/{presente.animacao}/config.json"
         try:
             with zipfile.ZipFile(self._arquivo_de(presente)) as z:

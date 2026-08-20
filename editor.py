@@ -966,6 +966,14 @@ class Editor(ttk.Frame):
     # Quanto antes de a animação começar ela já é preparada.
     JANELA_ANIM = 3.0
     GUARDAR_ANIM = 3            # animações decodificadas mantidas em disco
+    # Altura mínima da faixa do meio (prévia e painel lateral). O painel rola
+    # quando não cabe inteiro, então este é o piso da aba, e não o tamanho de
+    # que ela precisa: abaixo daqui a prévia deixaria de mostrar qualquer
+    # coisa e a linha do tempo começaria a sair pela borda de baixo.
+    PAINEL_MIN = 210
+    # Abaixo desta largura as linhas de atalhos saem de cena: elas são o que
+    # mais alarga a aba e o que menos falta faz numa janela apertada.
+    LARGURA_DICAS = 940
 
     def __init__(self, parent, emit):
         super().__init__(parent, padding=12)
@@ -1011,6 +1019,9 @@ class Editor(ttk.Frame):
         # Camadas já pedidas ao fundo, ligadas ou não, para não pedir duas vezes.
         self._preparando_chat = False
         self._preparando_contador = False
+        # Partes que aparecem e somem conforme o tamanho da janela.
+        self._dicas_a_mostra = True
+        self._barra_do_painel = False
         # Invalida preparações em segundo plano quando outro vídeo é aberto.
         self._carregamento_id = 0
         self._video_pronto_id = 0
@@ -1021,10 +1032,12 @@ class Editor(ttk.Frame):
 
     def _montar(self) -> None:
         # A prévia é a área principal; o painel segue com espaço para os
-        # controles, mas não toma metade da janela.
-        self.columnconfigure(0, weight=3, minsize=420)
-        self.columnconfigure(1, weight=1, minsize=310)
-        self.rowconfigure(1, weight=1)
+        # controles, mas não toma metade da janela. Os minsize são o menor
+        # tamanho em que as duas colunas ainda servem para alguma coisa - o
+        # resto do encolhimento sai da prévia e da rolagem do painel.
+        self.columnconfigure(0, weight=3, minsize=300)
+        self.columnconfigure(1, weight=1, minsize=290)
+        self.rowconfigure(1, weight=1, minsize=self.PAINEL_MIN)
 
         topo = ttk.Frame(self)
         topo.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
@@ -1050,8 +1063,29 @@ class Editor(ttk.Frame):
                         relwidth=1.0, relheight=1.0)
 
         # --- painel lateral ----------------------------------------------
-        lado = ttk.Frame(self)
-        lado.grid(row=1, column=1, sticky="nsew")
+        # Vai dentro de um canvas que rola. Com a janela baixa, o que não cabe
+        # passa a ser alcançável pela rolagem em vez de sumir por baixo da
+        # borda - era isso que fazia o trecho a exportar desaparecer sem
+        # deixar pista de que ele ainda estava ali.
+        caixa = ttk.Frame(self)
+        caixa.grid(row=1, column=1, sticky="nsew")
+        caixa.rowconfigure(0, weight=1)
+        caixa.columnconfigure(0, weight=1)
+        self._painel_canvas = tk.Canvas(caixa, highlightthickness=0, bd=0,
+                                        width=270, height=self.PAINEL_MIN,
+                                        background=self._cor_de_fundo())
+        self._painel_canvas.grid(row=0, column=0, sticky="nsew")
+        self._painel_barra = ttk.Scrollbar(caixa, orient="vertical",
+                                           command=self._painel_canvas.yview)
+        self._painel_barra.grid(row=0, column=1, sticky="ns")
+        self._painel_barra.grid_remove()        # só aparece quando faz falta
+        self._painel_canvas.configure(yscrollcommand=self._rolou_o_painel)
+
+        lado = ttk.Frame(self._painel_canvas)
+        self._painel_janela = self._painel_canvas.create_window(
+            (0, 0), window=lado, anchor="nw")
+        lado.bind("<Configure>", self._painel_mudou, add="+")
+        self._painel_canvas.bind("<Configure>", self._painel_mudou, add="+")
         # O minsize é o que impede a lista de presentes de encolher até
         # desaparecer quando a janela está baixa.
         lado.rowconfigure(1, weight=1, minsize=110)
@@ -1175,10 +1209,12 @@ class Editor(ttk.Frame):
         self.onda_var = tk.StringVar(value="")
         ttk.Label(faixa, textvariable=self.onda_var, foreground="#64748b").grid(
             row=2, column=0, sticky="w")
-        ttk.Label(faixa, text="com a barra selecionada: ← → = um quadro · "
-                              "Shift+← → = um segundo · I ou [ = início · "
-                              "O ou ] = fim",
-                  foreground="#94a3b8").grid(row=2, column=0, sticky="e")
+        self.dica_linha = ttk.Label(
+            faixa, text="com a barra selecionada: ← → = um quadro · "
+                        "Shift+← → = um segundo · I ou [ = início · "
+                        "O ou ] = fim",
+            foreground="#94a3b8")
+        self.dica_linha.grid(row=2, column=0, sticky="e")
 
         # --- transporte ---------------------------------------------------
         transporte = ttk.Frame(self)
@@ -1209,9 +1245,11 @@ class Editor(ttk.Frame):
         ttk.Label(relogio, textvariable=self.tempo_trecho_var,
                   font=("Consolas", 11), foreground="#0f766e").pack(
                       side="left", padx=(14, 0))
-        ttk.Label(transporte,
-                  text="espaço = tocar · W = voltar ao início · [ ] = marcar trecho",
-                  foreground="#94a3b8").grid(row=0, column=6, sticky="e")
+        self.dica_transporte = ttk.Label(
+            transporte,
+            text="espaço = tocar · W = voltar ao início · [ ] = marcar trecho",
+            foreground="#94a3b8")
+        self.dica_transporte.grid(row=0, column=6, sticky="e")
 
         # --- exportação ----------------------------------------------------
         acoes = ttk.Frame(self)
@@ -1259,6 +1297,7 @@ class Editor(ttk.Frame):
         self.btn_pasta.pack(side="left", padx=8)
 
         self.bind("<Configure>", self._janela_mudou, add="+")
+        self._ligar_roda(lado)
         self._blindar_foco()
         self._ligar_atalhos()
         # Só agora: o campo da sincronia nasce antes da barra do tempo, e o
@@ -1267,6 +1306,118 @@ class Editor(ttk.Frame):
         self._sincronia_mudou()
         self.after(200, self._tique)
         self.after(self.INTERVALO, self._tique_camadas)
+
+    # ------------------------------------------------- painel que rola
+
+    def _cor_de_fundo(self) -> str:
+        """A cor do tema em uso, para o canvas do painel não virar um retângulo
+        de outra cor no meio da aba."""
+        try:
+            cor = ttk.Style().lookup("TFrame", "background")
+        except tk.TclError:
+            cor = ""
+        return str(cor) if cor else "#f0f0f0"
+
+    def _painel_mudou(self, _evt=None) -> None:
+        """Acerta a área rolável quando o painel ou a janela mudam de tamanho.
+
+        Sobrando altura, o conteúdo ocupa tudo e a lista de presentes cresce
+        junto; faltando, o canvas rola em vez de cortar o que está embaixo.
+        """
+        canvas = getattr(self, "_painel_canvas", None)
+        if canvas is None:
+            return
+        try:
+            dentro = canvas.nametowidget(canvas.itemcget(self._painel_janela,
+                                                         "window"))
+            largura = max(canvas.winfo_width(), dentro.winfo_reqwidth())
+            altura = max(canvas.winfo_height(), dentro.winfo_reqheight())
+            canvas.itemconfigure(self._painel_janela, width=largura,
+                                 height=altura)
+            canvas.configure(scrollregion=(0, 0, largura, altura),
+                             width=dentro.winfo_reqwidth())
+        except tk.TclError:
+            pass
+
+    def _rolou_o_painel(self, inicio, fim) -> None:
+        """Mostra a barra do painel só enquanto há o que rolar."""
+        self._painel_barra.set(inicio, fim)
+        precisa = float(inicio) > 0.0 or float(fim) < 1.0
+        if precisa == self._barra_do_painel:
+            return
+        self._barra_do_painel = precisa
+        if precisa:
+            self._painel_barra.grid()
+        else:
+            self._painel_barra.grid_remove()
+
+    def _ligar_roda(self, raiz) -> None:
+        """A rodinha do mouse rola o painel de qualquer ponto dele.
+
+        A lista de presentes fica de fora: lá a roda é dela, para percorrer os
+        presentes sem levar o painel inteiro junto.
+        """
+        for filho in raiz.winfo_children():
+            if isinstance(filho, (tk.Listbox, ttk.Spinbox, ttk.Scale)):
+                continue
+            filho.bind("<MouseWheel>", self._roda_no_painel, add="+")
+            for botao, passo in ((4, 120), (5, -120)):      # roda no X11
+                filho.bind(f"<Button-{botao}>",
+                           lambda e, d=passo: self._roda_no_painel(e, d),
+                           add="+")
+            self._ligar_roda(filho)
+        raiz.bind("<MouseWheel>", self._roda_no_painel, add="+")
+
+    def _roda_no_painel(self, evt=None, delta=None) -> str:
+        passo = delta if delta is not None else getattr(evt, "delta", 0)
+        if self._barra_do_painel and passo:
+            self._painel_canvas.yview_scroll(-1 if passo > 0 else 1, "units")
+        return "break"
+
+    def _ajustar_dicas(self) -> None:
+        """Some com as linhas de atalhos quando a janela fica estreita.
+
+        O estado vem daqui, e não de `winfo_ismapped`: antes de a janela
+        aparecer o Tk ainda diz que nada está na tela, e as dicas escapavam
+        dessa primeira passada para reaparecerem numa janela que não as
+        comporta.
+        """
+        mostrar = self.winfo_width() >= self.LARGURA_DICAS
+        if mostrar == self._dicas_a_mostra:
+            return
+        self._dicas_a_mostra = mostrar
+        for dica in (self.dica_linha, self.dica_transporte):
+            if mostrar:
+                dica.grid()
+            else:
+                dica.grid_remove()
+
+    def encolher_para_medir(self) -> None:
+        """Deixa a aba no seu menor formato, para quem for medir a janela.
+
+        As dicas saem porque elas somem sozinhas em janela estreita: contá-las
+        daria à janela um mínimo maior do que ela de fato precisa. O painel
+        lateral já entra encolhido pelo piso da faixa do meio, que é o quanto
+        ele mostra antes de passar a rolar.
+        """
+        for dica in (self.dica_linha, self.dica_transporte):
+            dica.grid_remove()
+        self._dicas_a_mostra = False
+
+    def rever_dicas(self) -> None:
+        """Devolve as dicas se a largura de agora comporta as duas."""
+        self._ajustar_dicas()
+
+    def tamanho_minimo(self) -> tuple[int, int]:
+        """O menor tamanho em que a aba mostra tudo, medido do próprio layout."""
+        self.encolher_para_medir()
+        # Duas passadas: na primeira o grid ainda devolve a largura que a aba
+        # tinha com as dicas dentro.
+        self.update_idletasks()
+        self.update_idletasks()
+        tamanho = (self.winfo_reqwidth(), self.winfo_reqheight())
+        self.rever_dicas()
+        return tamanho
 
     # ------------------------------------------------------------ atalhos
 
@@ -1541,6 +1692,7 @@ class Editor(ttk.Frame):
     def _janela_mudou(self, _evt=None) -> None:
         """Redimensionar muda o tamanho em que as animações têm de estar."""
         self._ajustar_tela()
+        self._ajustar_dicas()
         if self._resize_id:
             self.after_cancel(self._resize_id)
         self._resize_id = self.after(400, self._conferir_escala)

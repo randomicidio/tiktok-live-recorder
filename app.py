@@ -190,6 +190,9 @@ class App(tk.Tk):
         diario.vigiar_tk(self)
         self.title(APP_TITLE)
         self.geometry("1000x700")
+        # O minimo de verdade sai medido do proprio layout depois que as
+        # abas estao montadas (veja `_ajustar_minimo`); este aqui e so o
+        # piso enquanto isso nao acontece.
         self.minsize(650, 500)
         self.configure(bg="#ffffff")
 
@@ -226,8 +229,40 @@ class App(tk.Tk):
         # nem o REC automatico acima.
         self._procurar_interrompidas()
         self._procurar_versao()
+        # Por ultimo: o minimo da janela sai do tamanho que as abas pedem,
+        # e a de editar so tem tamanho depois de montada.
+        self.after_idle(self._ajustar_minimo)
 
     # ------------------------------------------------------------------ UI
+
+    def _ajustar_minimo(self) -> None:
+        """Trava a janela no menor tamanho em que as abas cabem inteiras.
+
+        A queixa era da aba de editar: com a janela pequena, o trecho a
+        exportar e a linha do tempo ficavam para fora sem nada avisando. O
+        numero nao esta escrito aqui - vem do que a janela montada pede, com o
+        editor no seu formato mais apertado, e nunca passa do que a tela
+        comporta: numa tela pequena vale mais deixar a janela encolher do que
+        impedir que ela abra.
+        """
+        try:
+            self.editor.encolher_para_medir()
+            # Duas passadas: na primeira o grid ainda devolve a largura de
+            # antes de o editor encolher.
+            self.update_idletasks()
+            self.update_idletasks()
+            larg, alt = self.winfo_reqwidth(), self.winfo_reqheight()
+            self.editor.rever_dicas()
+            larg = max(650, min(larg, int(self.winfo_screenwidth() * 0.92)))
+            alt = max(500, min(alt, int(self.winfo_screenheight() * 0.88)))
+            self.minsize(larg, alt)
+            # A janela que ja tenha aberto menor do que isso nao se reajusta
+            # sozinha.
+            if self.winfo_width() < larg or self.winfo_height() < alt:
+                self.geometry(f"{max(self.winfo_width(), larg)}x"
+                              f"{max(self.winfo_height(), alt)}")
+        except tk.TclError:
+            pass      # janela fechando: sem minimo o programa funciona igual
 
     def _set_window_icon(self) -> None:
         """Icone da janela e da barra de tarefas."""

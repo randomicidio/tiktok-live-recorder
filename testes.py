@@ -17,6 +17,7 @@ import tempfile
 import unittest
 
 import atualizacao
+import catalogo
 import gift_log
 import pacote
 import recorder
@@ -93,6 +94,70 @@ class PacoteIdaEVolta(unittest.TestCase):
         pacote.criar(destino=destino, video="v.mp4", conta="c", inicio="",
                      presentes=[], animacoes={}, comentarios=[])
         self.assertIsNone(pacote.abrir(destino).abrir_figura("nao-existe"))
+
+
+class CatalogoDeAnimacoes(unittest.TestCase):
+    """O que o editor oferece para pôr à mão num replay sem registro."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        # Uma "animação" mínima: o catálogo só precisa que a pasta exista no
+        # pacote, e o config.json é o que marca uma animação como completa.
+        self.anim = os.path.join(self.tmp, "anim")
+        os.makedirs(self.anim)
+        with open(os.path.join(self.anim, "config.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"portrait": {"path": "output.mp4"}}, fh)
+        with open(os.path.join(self.anim, "output.mp4"), "wb") as fh:
+            fh.write(b"nao e um mp4 de verdade, e nem precisa ser")
+        self.gravacoes = os.path.join(self.tmp, "gravacoes")
+        os.makedirs(self.gravacoes)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _pacote(self, nome: str, presente: dict) -> str:
+        destino = os.path.join(self.gravacoes, nome + pacote.EXTENSAO)
+        pacote.criar(destino=destino, video=nome + ".mp4", conta="c",
+                     inicio="", presentes=[presente],
+                     animacoes={"md5-1": self.anim}, comentarios=[],
+                     figuras={"icone-1": b"nem precisa ser um PNG de verdade"})
+        return destino
+
+    def test_acha_o_presente_e_o_icone(self):
+        self._pacote("live1", {"t": 5.0, "nome": "Leão", "gift_id": 1,
+                               "diamantes": 100, "icone": "icone-1",
+                               "animacao": "md5-1"})
+        itens = catalogo.varrer([self.gravacoes])
+        self.assertEqual(len(itens), 1)
+        self.assertEqual(itens[0].nome, "Leão")
+        self.assertEqual(itens[0].animacao, "md5-1")
+        self.assertTrue(itens[0].icone_bytes)
+
+    def test_mesma_animacao_em_dois_pacotes_entra_uma_vez(self):
+        for nome in ("live1", "live2"):
+            self._pacote(nome, {"t": 5.0, "nome": "Leão", "gift_id": 1,
+                                "diamantes": 100, "icone": "icone-1",
+                                "animacao": "md5-1"})
+        self.assertEqual(len(catalogo.varrer([self.gravacoes])), 1)
+
+    def test_animacao_sai_do_pacote_de_origem(self):
+        # É isso que permite pôr um presente num vídeo que não tem pacote
+        # nenhum: o presente aponta para a gravação de onde a animação sai.
+        origem = self._pacote("live1", {"t": 5.0, "nome": "Leão", "gift_id": 1,
+                                        "diamantes": 100, "icone": "icone-1",
+                                        "animacao": "md5-1"})
+        item = catalogo.varrer([self.gravacoes])[0]
+        vazio = pacote.Pacote(caminho="", video="replay.mp4")
+        vazio.presentes.append(pacote.Presente(
+            t=2.0, nome=item.nome, animacao=item.animacao, icone=item.icone,
+            origem=origem, manual=True))
+        destino = os.path.join(self.tmp, "extraido")
+        pasta = vazio.extrair_animacao(vazio.presentes[0], destino)
+        self.assertTrue(os.path.exists(os.path.join(pasta, "config.json")))
+        self.assertEqual(vazio.config_da_animacao(vazio.presentes[0]),
+                         {"path": "output.mp4"})
+        self.assertEqual([p.nome for p in vazio.com_animacao], ["Leão"])
 
 
 class LeituraDoRegistroCru(unittest.TestCase):

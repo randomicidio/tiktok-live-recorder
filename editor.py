@@ -14,6 +14,7 @@ redesenhados só quando mudam de verdade.
 from __future__ import annotations
 
 import ctypes
+import io
 import json
 import mmap
 import os
@@ -24,6 +25,7 @@ import tkinter as tk
 from array import array
 from tkinter import filedialog, messagebox, ttk
 
+import catalogo as catalogo_mod
 import compositor
 import pacote as pacote_mod
 import resources
@@ -890,6 +892,20 @@ DICA_NAVEGACAO = ("na barra: roda = zoom · Alt+roda ou rodinha = navegar · "
                   "botão direito arrastando = marcar o trecho")
 
 
+def _pasta_das_gravacoes() -> str:
+    """A pasta que o gravador usa, lida do config.json.
+
+    Lida daqui e não pedida ao `app`: quem importa quem é ele, e o editor
+    só precisa do caminho.
+    """
+    try:
+        with open(os.path.join(resources.data_dir(), "config.json"),
+                  encoding="utf-8") as fh:
+            return str((json.load(fh) or {}).get("outdir") or "")
+    except (OSError, ValueError):
+        return ""
+
+
 def tempo(seg: float) -> str:
     seg = max(0, int(seg))
     h, r = divmod(seg, 3600)
@@ -952,6 +968,176 @@ def _extrair_onda(caminho: str, hz: float = 40.0, parcial=None):
 
 
 # ------------------------------------------------------------------- aba
+
+class EscolhaDePresente(tk.Toplevel):
+    """A lista do que dá para pôr por cima do vídeo, com os ícones oficiais.
+
+    O catálogo sai dos pacotes que já estão no disco (veja `catalogo.py`), então
+    o que aparece aqui é o que esta máquina consegue mesmo compor - nada de
+    oferecer um presente cuja animação teria de ser baixada na hora.
+    """
+
+    ICONE = 28
+
+    def __init__(self, dono, itens, quando: str, ao_escolher, ao_procurar):
+        super().__init__(dono)
+        self.title("Adicionar animação de presente")
+        self.transient(dono.winfo_toplevel())
+        self.resizable(True, True)
+        self._itens = itens
+        self._ao_escolher = ao_escolher
+        self._ao_procurar = ao_procurar
+        self._fotos = {}                 # o Tk descarta a imagem sem referência
+        self._ordem = ("nome", False)
+        self._mostrados: list = []
+
+        corpo = ttk.Frame(self, padding=10)
+        corpo.pack(fill="both", expand=True)
+        corpo.rowconfigure(1, weight=1)
+        corpo.columnconfigure(0, weight=1)
+
+        busca = ttk.Frame(corpo)
+        busca.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        busca.columnconfigure(1, weight=1)
+        ttk.Label(busca, text="Procurar").grid(row=0, column=0)
+        self.filtro_var = tk.StringVar()
+        campo = ttk.Entry(busca, textvariable=self.filtro_var)
+        campo.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        self.filtro_var.trace_add("write", lambda *_a: self._encher())
+
+        self.arvore = ttk.Treeview(corpo, columns=("diamantes",),
+                                   selectmode="browse", height=14)
+        self.arvore.heading("#0", text="Presente",
+                            command=lambda: self._ordenar("nome"))
+        self.arvore.heading("diamantes", text="Diamantes",
+                            command=lambda: self._ordenar("diamantes"))
+        self.arvore.column("#0", width=280, stretch=True)
+        self.arvore.column("diamantes", width=90, anchor="e", stretch=False)
+        self.arvore.grid(row=1, column=0, sticky="nsew")
+        # As linhas têm ícone: sem altura própria o Tk corta a imagem.
+        estilo = ttk.Style(self)
+        estilo.configure("Presentes.Treeview", rowheight=self.ICONE + 8)
+        self.arvore.configure(style="Presentes.Treeview")
+        rolagem = ttk.Scrollbar(corpo, orient="vertical",
+                                command=self.arvore.yview)
+        self.arvore.configure(yscrollcommand=rolagem.set)
+        rolagem.grid(row=1, column=1, sticky="ns")
+        self.arvore.bind("<Double-1>", lambda _e: self._escolher())
+        self.arvore.bind("<Return>", lambda _e: self._escolher())
+
+        self.recado = ttk.Label(corpo, foreground="#64748b", wraplength=430)
+        self.recado.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        rodape = ttk.Frame(corpo)
+        rodape.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        rodape.columnconfigure(1, weight=1)
+        ttk.Button(rodape, text="Procurar noutra pasta...",
+                   command=self._procurar).grid(row=0, column=0)
+        ttk.Button(rodape, text="Cancelar",
+                   command=self.destroy).grid(row=0, column=2, padx=(0, 6))
+        self.btn_ok = ttk.Button(rodape, text=f"Adicionar em {quando}",
+                                 command=self._escolher, state="disabled")
+        self.btn_ok.grid(row=0, column=3)
+        self.arvore.bind("<<TreeviewSelect>>", lambda _e: self._selecionou())
+
+        self._encher()
+        campo.focus_set()
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.update_idletasks()
+        # Nasce ao lado da janela que a abriu, e não no canto da tela.
+        raiz = dono.winfo_toplevel()
+        x = raiz.winfo_rootx() + (raiz.winfo_width() - self.winfo_width()) // 2
+        y = raiz.winfo_rooty() + 60
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.grab_set()
+
+    # ------------------------------------------------------------ conteúdo
+
+    def trocar_itens(self, itens) -> None:
+        self._itens = itens
+        self._encher()
+
+    def _foto(self, item):
+        """O ícone do presente como imagem do Tk, ou None se não der."""
+        if item.animacao in self._fotos:
+            return self._fotos[item.animacao]
+        foto = None
+        if item.icone_bytes:
+            try:
+                from PIL import Image, ImageTk
+                img = Image.open(io.BytesIO(item.icone_bytes)).convert("RGBA")
+                img = img.resize((self.ICONE, self.ICONE), Image.LANCZOS)
+                foto = ImageTk.PhotoImage(img, master=self)
+            except Exception:                        # noqa: BLE001
+                foto = None                          # sem PIL a lista vai sem ícone
+        self._fotos[item.animacao] = foto
+        return foto
+
+    def _encher(self) -> None:
+        procura = self.filtro_var.get().strip().lower()
+        chave, invertido = self._ordem
+        itens = [i for i in self._itens
+                 if not procura or procura in i.rotulo.lower()]
+        if chave == "diamantes":
+            itens.sort(key=lambda i: (i.diamantes, i.nome.lower()),
+                       reverse=not invertido)
+        else:
+            itens.sort(key=lambda i: (i.nome.lower(), i.animacao),
+                       reverse=invertido)
+        self.arvore.delete(*self.arvore.get_children())
+        self._mostrados = itens
+        for n, item in enumerate(itens):
+            foto = self._foto(item)
+            self.arvore.insert("", "end", iid=str(n), text=f" {item.rotulo}",
+                               image=foto or "",
+                               values=(f"{item.diamantes:,}".replace(",", "."),))
+        if not self._itens:
+            self.recado.configure(
+                text="Nenhum pacote de presentes encontrado. As animações vêm "
+                     "dos .ttgifts das suas gravações - aponte para a pasta "
+                     "onde elas estão.")
+        elif not itens:
+            self.recado.configure(text="Nenhum presente com esse nome.")
+        else:
+            self.recado.configure(
+                text=f"{len(itens)} de {len(self._itens)} presentes. "
+                     "A animação entra na posição atual do vídeo e espera a "
+                     "anterior acabar, como acontece na live.")
+        self._selecionou()
+
+    def _ordenar(self, chave: str) -> None:
+        atual, invertido = self._ordem
+        self._ordem = (chave, not invertido if atual == chave else False)
+        self._encher()
+
+    def _selecionou(self) -> None:
+        self.btn_ok.configure(
+            state="normal" if self.arvore.selection() else "disabled")
+
+    def _escolhido(self):
+        sel = self.arvore.selection()
+        if not sel:
+            return None
+        try:
+            return self._mostrados[int(sel[0])]
+        except (ValueError, IndexError):
+            return None
+
+    def _escolher(self) -> None:
+        item = self._escolhido()
+        if item is None:
+            return
+        self.destroy()
+        self._ao_escolher(item)
+
+    def _procurar(self) -> None:
+        # A varredura da pasta nova é do editor: é ele que sabe lembrar dela.
+        itens = self._ao_procurar()
+        if itens is not None:
+            self.trocar_itens(itens)
+        self.lift()
+        self.grab_set()
+
 
 class Editor(ttk.Frame):
     """Abre um vídeo, encontra o pacote e monta a versão com as camadas."""
@@ -1022,6 +1208,8 @@ class Editor(ttk.Frame):
         # Partes que aparecem e somem conforme o tamanho da janela.
         self._dicas_a_mostra = True
         self._barra_do_painel = False
+        # Catálogo de presentes do disco, varrido uma vez por sessão.
+        self._catalogo: list | None = None
         # Invalida preparações em segundo plano quando outro vídeo é aberto.
         self._carregamento_id = 0
         self._video_pronto_id = 0
@@ -1039,8 +1227,10 @@ class Editor(ttk.Frame):
         self.columnconfigure(1, weight=1, minsize=290)
         self.rowconfigure(1, weight=1, minsize=self.PAINEL_MIN)
 
+        # O topo ocupa só a coluna da prévia: o painel da direita sobe e usa
+        # a faixa que sobrava ao lado dos dois botões.
         topo = ttk.Frame(self)
-        topo.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        topo.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         topo.columnconfigure(1, weight=1)
         ttk.Button(topo, text="Abrir vídeo...", command=self.escolher_video).grid(
             row=0, column=0)
@@ -1068,7 +1258,7 @@ class Editor(ttk.Frame):
         # borda - era isso que fazia o trecho a exportar desaparecer sem
         # deixar pista de que ele ainda estava ali.
         caixa = ttk.Frame(self)
-        caixa.grid(row=1, column=1, sticky="nsew")
+        caixa.grid(row=0, column=1, rowspan=2, sticky="nsew")
         caixa.rowconfigure(0, weight=1)
         caixa.columnconfigure(0, weight=1)
         self._painel_canvas = tk.Canvas(caixa, highlightthickness=0, bd=0,
@@ -1156,6 +1346,21 @@ class Editor(ttk.Frame):
         sb = ttk.Scrollbar(lista, command=self.lista.yview)
         self.lista.configure(yscrollcommand=sb.set)
         sb.grid(row=0, column=1, sticky="ns")
+        # Pôr um presente à mão é o que salva o replay que veio sem registro
+        # nenhum: sem isso não há o que compor por cima dele.
+        botoes = ttk.Frame(lista)
+        botoes.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        botoes.columnconfigure(0, weight=1)
+        ttk.Button(botoes, text="+ Adicionar animação...",
+                   command=self.adicionar_animacao).grid(row=0, column=0,
+                                                         sticky="ew")
+        self.btn_remover = ttk.Button(botoes, text="Remover", width=9,
+                                      command=self._remover_manual,
+                                      state="disabled")
+        self.btn_remover.grid(row=0, column=1, padx=(6, 0))
+        self.lista.bind("<Delete>", lambda _e: self._remover_manual())
+        ttk.Label(botoes, text="*  posto à mão", foreground="#94a3b8").grid(
+            row=1, column=0, sticky="w", pady=(4, 0))
 
         trecho = ttk.LabelFrame(lado, text=" Trecho a exportar ", padding=8)
         trecho.grid(row=2, column=0, sticky="ew")
@@ -1578,8 +1783,10 @@ class Editor(ttk.Frame):
         else:
             self.pacote = None
             self._agenda = []
-            self.pacote_var.set("nenhum pacote encontrado — vincule manualmente")
+            self.pacote_var.set("nenhum pacote encontrado — vincule ou adicione animações à mão")
             self.lista.delete(0, "end")
+            self._conferir_remover()
+        self._recuperar_manuais()
 
     def _fixar_primeiro_quadro(self, pronto_id: int) -> None:
         """Força um quadro estável antes de montar as camadas do editor."""
@@ -1626,6 +1833,9 @@ class Editor(ttk.Frame):
         self._preparar_animacoes()
         self._preencher_lista()
         self._adiantar_camadas()
+        # O pacote novo entra por cima do que havia; os presentes postos à mão
+        # neste vídeo continuam sendo dele.
+        self._recuperar_manuais()
 
     def _preparar_animacoes(self) -> None:
         """Extrai as animações do pacote e calcula quando cada uma aparece."""
@@ -1639,14 +1849,191 @@ class Editor(ttk.Frame):
         self.emit("log", f"Editor: {len(self._agenda)} animações posicionadas.")
 
     def _preencher_lista(self) -> None:
+        """A agenda na tela. O `*` é dos presentes postos à mão."""
         self.lista.delete(0, "end")
         for item in self._agenda:
             p = item.presente
+            marca = "*" if getattr(p, "manual", False) else " "
             self.lista.insert(
-                "end", f"{tempo(item.inicio):>7}  {p.nome[:22]:<22} "
+                "end", f"{marca}{tempo(item.inicio):>6}  {p.nome[:21]:<21} "
                        f"{p.diamantes:>6}")
         if not self._agenda:
             self.lista.insert("end", "  nenhum presente com animação")
+        self._conferir_remover()
+
+    def _presente_selecionado(self):
+        """O agendado que está marcado na lista, se houver um."""
+        sel = self.lista.curselection()
+        if not sel or sel[0] >= len(self._agenda):
+            return None
+        return self._agenda[sel[0]]
+
+    def _conferir_remover(self) -> None:
+        """Remover é só do que foi posto à mão: o que veio da live é registro."""
+        item = self._presente_selecionado()
+        manual = bool(item and getattr(item.presente, "manual", False))
+        self.btn_remover.configure(state="normal" if manual else "disabled")
+
+    # ------------------------------------------- presentes postos à mão
+
+    def _posicao_atual(self) -> float:
+        """Onde a agulha está, que é onde a animação nova vai entrar."""
+        if self.player and self.player.disponivel:
+            return max(0.0, min(self.player.posicao, self._duracao))
+        return max(0.0, min(self.linha.posicao, self._duracao))
+
+    def _pastas_do_catalogo(self) -> list[str]:
+        """Onde procurar pacotes: a pasta do vídeo, a das gravações e a última
+        que a pessoa apontou à mão."""
+        extras = [_prefs().get("pasta_catalogo") or "",
+                  _pasta_das_gravacoes()]
+        return catalogo_mod.pastas_para_varrer(
+            self.video, self.pacote.caminho if self.pacote else "",
+            [e for e in extras if e])
+
+    def _varrer_catalogo(self, forcar: bool = False) -> list:
+        if self._catalogo is None or forcar:
+            self._catalogo = catalogo_mod.varrer(self._pastas_do_catalogo())
+            self.emit("log",
+                      f"Editor: {len(self._catalogo)} presentes com animação "
+                      "disponíveis para adicionar.")
+        return self._catalogo
+
+    def adicionar_animacao(self) -> None:
+        """Abre a lista de presentes que dá para pôr por cima deste vídeo."""
+        if not self.video:
+            messagebox.showinfo("Abra um vídeo",
+                                "Abra o vídeo antes de adicionar a animação.")
+            return
+        itens = self._varrer_catalogo()
+        EscolhaDePresente(self, itens, tempo(self._posicao_atual()),
+                          self._adicionar_do_catalogo, self._outra_pasta)
+
+    def _outra_pasta(self):
+        """Pergunta outra pasta de gravações e varre de novo. None = desistiu."""
+        pasta = filedialog.askdirectory(
+            title="Pasta com as gravações (.ttgifts)",
+            initialdir=_prefs().get("pasta_catalogo") or _pasta_das_gravacoes()
+            or os.path.dirname(self.video or "") or ".")
+        if not pasta:
+            return None
+        _lembrar("pasta_catalogo", pasta)
+        return self._varrer_catalogo(forcar=True)
+
+    def _adicionar_do_catalogo(self, item) -> None:
+        """Põe o presente escolhido na posição atual do vídeo.
+
+        Daqui para a frente ele é um presente como outro qualquer: entra na
+        fila das animações, aparece na prévia e sai no vídeo exportado. O que
+        o distingue é `manual`, que é o que permite tirá-lo de novo.
+        """
+        pos = self._posicao_atual()
+        if self.pacote is None:
+            # Vídeo sem pacote: um de mentira, só para carregar o que for
+            # posto à mão. Nada disso vai para disco.
+            self.pacote = pacote_mod.Pacote(caminho="", video=self.video)
+        p = pacote_mod.Presente(
+            t=pos - self.pacote.offset_segundos,
+            nome=item.rotulo, gift_id=item.gift_id, diamantes=item.diamantes,
+            icone=item.icone, animacao=item.animacao, origem=item.pacote,
+            manual=True)
+        self.pacote.presentes.append(p)
+        self._apos_mexer_nos_manuais(f"{item.rotulo} em {tempo(pos)}")
+        self._salvar_manuais()
+        # A agenda mudou de tamanho: a seleção volta para o presente novo.
+        for n, agendado in enumerate(self._agenda):
+            if agendado.presente is p:
+                self.lista.selection_clear(0, "end")
+                self.lista.selection_set(n)
+                self.lista.see(n)
+                self._conferir_remover()
+                break
+
+    def _remover_manual(self) -> None:
+        item = self._presente_selecionado()
+        if item is None or not getattr(item.presente, "manual", False):
+            return
+        nome = item.presente.nome
+        try:
+            self.pacote.presentes.remove(item.presente)
+        except (AttributeError, ValueError):
+            return
+        self._apos_mexer_nos_manuais(f"{nome} removido")
+        self._salvar_manuais()
+
+    def _apos_mexer_nos_manuais(self, recado: str) -> None:
+        """Reagenda tudo e refaz as camadas depois de entrar ou sair alguém.
+
+        A fila das animações muda inteira: quem vem depois pode ter sido
+        empurrado para a frente pelo que acabou de entrar.
+        """
+        self._descartar_camadas()
+        self._preparar_animacoes()
+        self._preencher_lista()
+        self._pedir_contador(silencioso=True)
+        self.emit("log", f"Editor: {recado}.")
+        if not self.pacote_var.get():
+            self.pacote_var.set("sem pacote — só as animações adicionadas")
+
+    # ------------------------------------------- lembrar entre sessões
+
+    def _salvar_manuais(self) -> None:
+        """Guarda os presentes à mão deste vídeo no editor.json.
+
+        Não entram no .ttgifts de propósito: o pacote é o registro do que a
+        live teve, e quem monta um replay não pode reescrever isso. Aqui é do
+        editor, some sem prejuízo nenhum e poupa refazer o trabalho quando o
+        mesmo vídeo é aberto de novo.
+        """
+        if not self.video:
+            return
+        manuais = [
+            {"t": p.t, "nome": p.nome, "gift_id": p.gift_id,
+             "diamantes": p.diamantes, "icone": p.icone,
+             "animacao": p.animacao, "origem": p.origem}
+            for p in (self.pacote.presentes if self.pacote else [])
+            if getattr(p, "manual", False)
+        ]
+        guardados = dict(_prefs().get("manuais") or {})
+        if manuais:
+            guardados[self.video] = manuais
+        else:
+            guardados.pop(self.video, None)
+        # Os mais antigos saem: isto é uma conveniência, não um arquivo.
+        while len(guardados) > 30:
+            guardados.pop(next(iter(guardados)))
+        _lembrar("manuais", guardados)
+
+    def _recuperar_manuais(self) -> None:
+        """Devolve ao vídeo os presentes que já tinham sido postos à mão.
+
+        Pode ser chamada de novo sem medo: o que já está posto sai primeiro,
+        para vincular outro pacote não acabar com o presente em dobro.
+        """
+        guardados = (_prefs().get("manuais") or {}).get(self.video) or []
+        if not guardados:
+            return
+        if self.pacote is None:
+            self.pacote = pacote_mod.Pacote(caminho="", video=self.video)
+        self.pacote.presentes = [p for p in self.pacote.presentes
+                                 if not getattr(p, "manual", False)]
+        voltaram = 0
+        for d in guardados:
+            try:
+                p = pacote_mod.Presente.de_dict(dict(d, manual=True))
+            except (TypeError, ValueError):
+                continue
+            # A gravação de onde a animação sai pode ter sido apagada desde
+            # então; sem ela não há o que compor.
+            if not p.animacao or not os.path.exists(p.origem):
+                continue
+            self.pacote.presentes.append(p)
+            voltaram += 1
+        if voltaram:
+            self._preparar_animacoes()
+            self._preencher_lista()
+            self.emit("log", f"Editor: {voltaram} animações adicionadas antes "
+                             "a este vídeo voltaram.")
 
     # ------------------------------------------------------------ camadas
 
@@ -2027,10 +2414,11 @@ class Editor(ttk.Frame):
     # ---------------------------------------------------------- navegação
 
     def _ir_para_presente(self, _evt=None) -> None:
-        sel = self.lista.curselection()
-        if not sel or sel[0] >= len(self._agenda):
+        self._conferir_remover()
+        item = self._presente_selecionado()
+        if item is None:
             return
-        alvo = max(0.0, self._agenda[sel[0]].inicio - 1.5)
+        alvo = max(0.0, item.inicio - 1.5)
         if self.player:
             self.player.buscar(alvo)
         self.linha.definir_posicao(alvo)

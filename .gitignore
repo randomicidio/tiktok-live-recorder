@@ -10,6 +10,7 @@ __pycache__/
 
 # Dados locais (config guarda o seu @; gravações são pesadas)
 config.json
+editor.json
 Gravacoes/
 Teste1/
 ProgramaVersao1/

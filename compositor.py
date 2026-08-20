@@ -685,7 +685,10 @@ class PintorDeContador:
 
         # Ícone oficial vem embutido no .ttgifts; pacotes antigos usam emoji.
         # Ele se apoia na borda da pílula e avança um pouco para fora dela.
-        oficial = self.pacote.abrir_figura(p.icone) if getattr(p, "icone", "") else None
+        # O ícone de um presente posto à mão no editor mora no pacote de onde
+        # a animação saiu, e não neste.
+        oficial = (self.pacote.abrir_figura(p.icone, getattr(p, "origem", ""))
+                   if getattr(p, "icone", "") else None)
         if oficial is not None:
             oficial = oficial.resize((self.icone, self.icone), Image.LANCZOS)
             img.alpha_composite(oficial, (ix, (h - self.icone) // 2))
@@ -1116,6 +1119,11 @@ def exportar(video: str, pac: pacote_mod.Pacote, saida: str,
         # saindo direto da entrada, sem colchetes.
         args += ["-map", f"[{atual}]" if atual != "0:v" else "0:v"]
         args += mapa_audio + [
+            # O trecho pedido é o trecho que sai. Sem este corte, uma animação
+            # que começa perto do fim segurava a saída até o vídeo dela acabar,
+            # e o clipe terminava com segundos parados que ninguém pediu - a
+            # animação nem aparecia neles, o `enable` já a tinha desligado.
+            "-t", f"{dur:.3f}",
             "-c:v", "libx264", "-preset", "medium", "-crf", "18",
             "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", saida]
 

@@ -51,6 +51,12 @@ class Presente:
     hora: str = ""
     # preenchido quando a animação existe no pacote
     animacao: str = ""
+    # Posto à mão no editor, e não recebido na live. Só existe em memória: o
+    # pacote em disco continua sendo o registro do que de fato aconteceu.
+    manual: bool = False
+    # Outro .ttgifts de onde sair a animação e o ícone. Vazio quer dizer "deste
+    # mesmo pacote", que é o caso de tudo o que veio da live.
+    origem: str = ""
 
     @classmethod
     def de_dict(cls, d: dict) -> "Presente":
@@ -67,6 +73,8 @@ class Presente:
             icone=d.get("icone") or "",
             hora=d.get("hora") or "",
             animacao=d.get("animacao") or "",
+            manual=bool(d.get("manual")),
+            origem=d.get("origem") or "",
         )
 
 
@@ -133,22 +141,31 @@ class Pacote:
         """Só os presentes cuja animação está guardada no pacote."""
         return [p for p in self.presentes if p.animacao]
 
-    def abrir_figura(self, ident: str):
-        """A figura de um emote da live, ou None se não veio no pacote.
+    def _arquivo_de(self, presente: Presente) -> str:
+        """De qual .ttgifts sai o que é desse presente.
+
+        Quase sempre é este mesmo. Os presentes postos à mão no editor vêm de
+        outra gravação, e é `origem` que diz de qual.
+        """
+        return getattr(presente, "origem", "") or self.caminho
+
+    def abrir_figura(self, ident: str, origem: str = ""):
+        """A figura de um emote ou de um presente, ou None se não veio no pacote.
 
         Guardada aberta: o mesmo emote reaparece em muitos quadros seguidos.
         """
-        if ident in self._figuras:
-            return self._figuras[ident]
+        chave = (origem, ident)
+        if chave in self._figuras:
+            return self._figuras[chave]
         img = None
         try:
             from PIL import Image
-            with zipfile.ZipFile(self.caminho) as z:
+            with zipfile.ZipFile(origem or self.caminho) as z:
                 with z.open(f"{PASTA_FIGURAS}/{ident}.png") as fh:
                     img = Image.open(io.BytesIO(fh.read())).convert("RGBA")
         except (KeyError, zipfile.BadZipFile, OSError, ValueError):
             img = None
-        self._figuras[ident] = img
+        self._figuras[chave] = img
         return img
 
     def extrair_animacao(self, presente: Presente, destino: str) -> str:
@@ -160,7 +177,7 @@ class Pacote:
             return alvo
         prefixo = f"{PASTA_ANIM}/{presente.animacao}/"
         try:
-            with zipfile.ZipFile(self.caminho) as z:
+            with zipfile.ZipFile(self._arquivo_de(presente)) as z:
                 nomes = [n for n in z.namelist() if n.startswith(prefixo)]
                 if not nomes:
                     return ""
@@ -181,7 +198,7 @@ class Pacote:
             return {}
         alvo = f"{PASTA_ANIM}/{presente.animacao}/config.json"
         try:
-            with zipfile.ZipFile(self.caminho) as z:
+            with zipfile.ZipFile(self._arquivo_de(presente)) as z:
                 with z.open(alvo) as fh:
                     return (json.loads(fh.read().decode("utf-8")) or {}).get("portrait") or {}
         except (KeyError, zipfile.BadZipFile, OSError, ValueError):

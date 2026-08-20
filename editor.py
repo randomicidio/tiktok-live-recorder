@@ -1001,9 +1001,9 @@ class EscolhaDePresente(tk.Toplevel):
         self._geracao = 0
         self._fotos = {}                 # o Tk descarta a imagem sem referência
         self._foto_de = None
-        # A lista nasce do mais caro para o mais barato: é o valor em
-        # moedas que diz o tamanho da animação, e é por ele que se procura
-        # o presente. Clicar no cabeçalho inverte, ou ordena por nome.
+        # A lista nasce ordenada por moedas, do mais barato para o mais caro,
+        # como no painel de presentes do aplicativo. Clicar no cabeçalho
+        # inverte, ou passa a ordenar por nome.
         self._ordem = ("diamantes", False)
         self._mostrados: list = []
         # Perfil já resolvido e de quem ele é: digitar outro @ invalida.
@@ -1164,7 +1164,7 @@ class EscolhaDePresente(tk.Toplevel):
                  if not procura or procura in i.rotulo.lower()]
         if chave == "diamantes":
             itens.sort(key=lambda i: (i.diamantes, i.nome.lower()),
-                       reverse=not invertido)
+                       reverse=invertido)
         else:
             itens.sort(key=lambda i: (i.nome.lower(), i.animacao),
                        reverse=invertido)

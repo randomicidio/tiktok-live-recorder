@@ -51,7 +51,21 @@ def _prefs() -> dict:
             _prefs_cache = dados if isinstance(dados, dict) else {}
         except (OSError, ValueError):
             _prefs_cache = {}
+        if "manuais" in _prefs_cache:
+            # Versão anterior guardava aqui os presentes postos à mão em cada
+            # vídeo. Não guarda mais - abrir o vídeo mostra o que está no
+            # .ttgifts e nada além disso -, então o que sobrou vai embora.
+            _prefs_cache.pop("manuais", None)
+            _gravar_prefs()
     return _prefs_cache
+
+
+def _gravar_prefs() -> None:
+    try:
+        with open(_PREFS_PATH, "w", encoding="utf-8") as fh:
+            json.dump(_prefs_cache or {}, fh, indent=2, ensure_ascii=False)
+    except OSError:
+        pass          # preferência é conveniência: sem ela o editor funciona
 
 
 def _lembrar(chave: str, valor) -> None:
@@ -2063,9 +2077,7 @@ class Editor(ttk.Frame):
             self.pacote = None
             self._agenda = []
             self.pacote_var.set("nenhum pacote encontrado — vincule ou adicione animações à mão")
-            self.lista.delete(0, "end")
-            self._conferir_remover()
-        self._recuperar_manuais()
+            self._preencher_lista()
 
     def _fixar_primeiro_quadro(self, pronto_id: int) -> None:
         """Força um quadro estável antes de montar as camadas do editor."""
@@ -2112,9 +2124,6 @@ class Editor(ttk.Frame):
         self._preparar_animacoes()
         self._preencher_lista()
         self._adiantar_camadas()
-        # O pacote novo entra por cima do que havia; os presentes postos à mão
-        # neste vídeo continuam sendo dele.
-        self._recuperar_manuais()
 
     def _preparar_animacoes(self) -> None:
         """Extrai as animações do pacote e calcula quando cada uma aparece."""
@@ -2277,7 +2286,11 @@ class Editor(ttk.Frame):
         if perfil is not None:
             _lembrar("ultimo_de", perfil.usuario)
         if item.em_disco:
-            self._por_no_video(item, pos, perfil, item.pacote)
+            # Já aqui: ou dentro de um .ttgifts, ou baixada numa vez anterior.
+            # Quem sabe dizer de onde ela sai é o catálogo, e neste caso ele
+            # responde sem tocar na rede.
+            self._por_no_video(item, pos, perfil,
+                               catalogo_mod.garantir_animacao(item))
             return
         self.aviso.set(f"Baixando a animação de {item.rotulo}...")
 
@@ -2326,7 +2339,6 @@ class Editor(ttk.Frame):
             manual=True)
         self.pacote.presentes.append(p)
         self._apos_mexer_nos_manuais(f"{item.rotulo} em {tempo(pos)}")
-        self._salvar_manuais()
         # A agenda mudou de tamanho: a seleção volta para o presente novo.
         for n, agendado in enumerate(self._agenda):
             if agendado.presente is p:
@@ -2346,7 +2358,6 @@ class Editor(ttk.Frame):
         except (AttributeError, ValueError):
             return
         self._apos_mexer_nos_manuais(f"{nome} removido")
-        self._salvar_manuais()
 
     def _apos_mexer_nos_manuais(self, recado: str) -> None:
         """Reagenda tudo e refaz as camadas depois de entrar ou sair alguém.
@@ -2361,67 +2372,6 @@ class Editor(ttk.Frame):
         self.emit("log", f"Editor: {recado}.")
         if not self.pacote_var.get():
             self.pacote_var.set("sem pacote — só as animações adicionadas")
-
-    # ------------------------------------------- lembrar entre sessões
-
-    def _salvar_manuais(self) -> None:
-        """Guarda os presentes à mão deste vídeo no editor.json.
-
-        Não entram no .ttgifts de propósito: o pacote é o registro do que a
-        live teve, e quem monta um replay não pode reescrever isso. Aqui é do
-        editor, some sem prejuízo nenhum e poupa refazer o trabalho quando o
-        mesmo vídeo é aberto de novo.
-        """
-        if not self.video:
-            return
-        manuais = [
-            {"t": p.t, "nome": p.nome, "gift_id": p.gift_id,
-             "diamantes": p.diamantes, "icone": p.icone,
-             "animacao": p.animacao, "origem": p.origem,
-             "de": p.de, "apelido": p.apelido, "avatar": p.avatar}
-            for p in (self.pacote.presentes if self.pacote else [])
-            if getattr(p, "manual", False)
-        ]
-        guardados = dict(_prefs().get("manuais") or {})
-        if manuais:
-            guardados[self.video] = manuais
-        else:
-            guardados.pop(self.video, None)
-        # Os mais antigos saem: isto é uma conveniência, não um arquivo.
-        while len(guardados) > 30:
-            guardados.pop(next(iter(guardados)))
-        _lembrar("manuais", guardados)
-
-    def _recuperar_manuais(self) -> None:
-        """Devolve ao vídeo os presentes que já tinham sido postos à mão.
-
-        Pode ser chamada de novo sem medo: o que já está posto sai primeiro,
-        para vincular outro pacote não acabar com o presente em dobro.
-        """
-        guardados = (_prefs().get("manuais") or {}).get(self.video) or []
-        if not guardados:
-            return
-        if self.pacote is None:
-            self.pacote = pacote_mod.Pacote(caminho="", video=self.video)
-        self.pacote.presentes = [p for p in self.pacote.presentes
-                                 if not getattr(p, "manual", False)]
-        voltaram = 0
-        for d in guardados:
-            try:
-                p = pacote_mod.Presente.de_dict(dict(d, manual=True))
-            except (TypeError, ValueError):
-                continue
-            # A gravação de onde a animação sai pode ter sido apagada desde
-            # então; sem ela não há o que compor.
-            if not p.animacao or not os.path.exists(p.origem):
-                continue          # a gravação (ou a pasta) sumiu daqui
-            self.pacote.presentes.append(p)
-            voltaram += 1
-        if voltaram:
-            self._preparar_animacoes()
-            self._preencher_lista()
-            self.emit("log", f"Editor: {voltaram} animações adicionadas antes "
-                             "a este vídeo voltaram.")
 
     # ------------------------------------------------------------ camadas
 

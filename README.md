@@ -329,9 +329,10 @@ de catálogo.
 
 Na lista, o que foi posto à mão vem com **`*`** e pode ser removido (botão
 **Remover** ou a tecla Delete) — o que veio da live, não: o pacote é o registro
-do que aconteceu, e o editor não reescreve isso. O que você adicionar fica
-guardado por vídeo no `editor.json`, então reabrir o mesmo arquivo devolve o
-trabalho.
+do que aconteceu, e o editor não reescreve isso. O que você adiciona vale só
+para a sessão: abrir o vídeo de novo mostra o que está no `.ttgifts` e nada
+além disso — e nada, se ele não tiver pacote. Assim o que você vê ao abrir um
+arquivo é sempre o que aquele arquivo tem, sem herança de uma edição anterior.
 
 **A prévia é a mesma coisa que o arquivo.** O chat e o contador são desenhados
 pelo mesmo código que a exportação usa, então o que aparece na tela é o que sai

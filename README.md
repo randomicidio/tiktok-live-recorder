@@ -307,6 +307,12 @@ estava. Na exportação o arquivo entra duas vezes, com o corte do áudio
 deslocado, para o som seguir inteiro nas duas pontas do trecho em vez de abrir
 um silêncio no começo.
 
+**Os nomes dos presentes vêm em português.** Tanto na lista de escolha quanto
+no `.ttgifts` de uma gravação nova: o nome é o oficial do catálogo do TikTok
+("Leão", "Casquinha de sorvete", "Puro estilo"), e não o que o evento da live
+traz — esse sai no idioma que o TikTok escolher para a conexão. Pacotes
+gravados antes disso continuam com o nome que tinham.
+
 **Pôr uma animação à mão.** Embaixo da lista de presentes, **+ Adicionar
 animação...** abre o catálogo do TikTok — todos os presentes que têm animação de
 tela cheia, com o ícone oficial e o nome em português. Escolhido o presente, a

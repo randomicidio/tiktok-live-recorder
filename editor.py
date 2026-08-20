@@ -2224,9 +2224,9 @@ class Editor(ttk.Frame):
             erro = ""
             itens = []
             try:
-                itens = catalogo_mod.da_api(
+                itens, nomes = catalogo_mod.da_api(
                     progresso=lambda t: self.na_interface(andou, t))
-                catalogo_mod.guardar(itens)
+                catalogo_mod.guardar(itens, nomes)
             except catalogo_mod.CatalogoError as e:
                 erro = str(e)
             except Exception as e:                   # noqa: BLE001

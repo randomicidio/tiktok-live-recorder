@@ -119,13 +119,17 @@ class Item:
 
 # ------------------------------------------------------------ lista do TikTok
 
-def da_api(session=None, progresso=None) -> list[Item]:
+def da_api(session=None, progresso=None) -> tuple[list[Item], dict[int, str]]:
     """Pergunta ao TikTok a lista inteira e quais presentes têm animação.
 
     Duas etapas: a lista do painel diz nome, diamantes, ícone e o efeito de
     cada presente; a API de efeitos diz quais desses efeitos têm mesmo um vídeo
-    para baixar. Só os que têm entram - oferecer um presente que não daria em
-    animação nenhuma seria enganar quem escolhe.
+    para baixar. Só os que têm entram na lista de escolha - oferecer um
+    presente que não daria em animação nenhuma seria enganar quem escolhe.
+
+    Devolve também o nome em português de *todos* os presentes, com animação
+    ou sem: é esse mapa que o gravador usa para anotar no .ttgifts o nome que
+    a pessoa vê no aplicativo.
     """
     import requests
 
@@ -143,7 +147,15 @@ def da_api(session=None, progresso=None) -> list[Item]:
         raise CatalogoError("O TikTok respondeu sem nenhum presente na lista.")
 
     por_efeito: dict[int, list[Item]] = {}
+    nomes: dict[int, str] = {}
     for g in presentes:
+        try:
+            gift_id = int(g.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        nome = str(g.get("name") or "")
+        if gift_id and nome:
+            nomes[gift_id] = nome
         try:
             efeito = int(g.get("primary_effect_id") or 0)
         except (TypeError, ValueError):
@@ -151,8 +163,8 @@ def da_api(session=None, progresso=None) -> list[Item]:
         if not efeito:
             continue                     # presente sem animação de tela cheia
         item = Item(
-            nome=str(g.get("name") or ""),
-            gift_id=int(g.get("id") or 0),
+            nome=nome,
+            gift_id=gift_id,
             diamantes=int(g.get("diamond_count") or 0),
             effect_id=efeito,
             icone_url=_primeira_url(g.get("icon") or g.get("image")))
@@ -176,7 +188,7 @@ def da_api(session=None, progresso=None) -> list[Item]:
                 saida.append(item)
     if not saida:
         raise CatalogoError("Nenhum presente da lista tem animação para baixar.")
-    return saida
+    return saida, nomes
 
 
 def _primeira_url(no) -> str:
@@ -207,15 +219,68 @@ class CatalogoError(Exception):
 
 # --------------------------------------------------------- lista guardada
 
-def guardar(itens: list[Item]) -> None:
+def guardar(itens: list[Item], nomes: dict[int, str] | None = None) -> None:
     """Grava a lista para a próxima vez abrir na hora."""
+    global _nomes_cache
+    if nomes is None:
+        nomes = nomes_guardados()
     try:
         with open(arquivo_da_lista(), "w", encoding="utf-8") as fh:
             json.dump({"quando": time.time(),
-                       "itens": [i.como_dict() for i in itens]},
+                       "itens": [i.como_dict() for i in itens],
+                       "nomes": {str(k): v for k, v in nomes.items()}},
                       fh, ensure_ascii=False)
+        _nomes_cache = dict(nomes)
     except OSError:
         pass            # sem o cache o editor funciona igual, só mais devagar
+
+
+_nomes_cache: dict[int, str] | None = None
+
+
+def nomes_guardados() -> dict[int, str]:
+    """O nome em português de cada presente, por gift_id."""
+    global _nomes_cache
+    if _nomes_cache is not None:
+        return _nomes_cache
+    _nomes_cache = {}
+    try:
+        with open(arquivo_da_lista(), encoding="utf-8") as fh:
+            dados = json.load(fh) or {}
+        for chave, nome in (dados.get("nomes") or {}).items():
+            _nomes_cache[int(chave)] = str(nome)
+    except (OSError, ValueError, TypeError):
+        pass
+    return _nomes_cache
+
+
+def nome_em_portugues(gift_id: int, padrao: str = "") -> str:
+    """O nome oficial em português desse presente, ou `padrao`.
+
+    É o que o gravador anota no .ttgifts. O nome que vem no evento da live
+    sai no idioma que o TikTok escolher para a conexão, e o que a pessoa vê
+    no aplicativo dela é este.
+    """
+    try:
+        return nomes_guardados().get(int(gift_id)) or padrao
+    except (TypeError, ValueError):
+        return padrao
+
+
+def garantir_lista(forcar: bool = False) -> dict[int, str]:
+    """Deixa a lista do TikTok em disco e devolve os nomes por gift_id.
+
+    Chamada pelo gravador ao começar a registrar presentes, numa thread: se
+    a rede não responder, fica o que já estava guardado.
+    """
+    if not forcar and nomes_guardados() and not esta_velha():
+        return nomes_guardados()
+    try:
+        itens, nomes = da_api()
+    except CatalogoError:
+        return nomes_guardados()
+    guardar(itens, nomes)
+    return nomes
 
 
 def guardados() -> list[Item]:
@@ -464,7 +529,16 @@ def juntar(*listas: list[Item]) -> list[Item]:
             atual.icone = atual.icone or item.icone
             atual.icone_bytes = atual.icone_bytes or item.icone_bytes
 
-    itens = sorted(achados.values(), key=lambda i: (i.nome.lower(), i.animacao))
+    # Presente que ainda está no catálogo entra com a animação de hoje; a
+    # versão antiga, guardada num .ttgifts de uma gravação passada, sai da
+    # lista. É o mesmo presente com o vídeo que o TikTok já trocou - e ainda
+    # apareceria com o nome em inglês de quando foi gravado. O que saiu de
+    # catálogo fica: aí o pacote é a única cópia que existe.
+    no_catalogo = {i.gift_id for i in achados.values() if i.effect_id and i.gift_id}
+    vivos = [i for i in achados.values()
+             if i.effect_id or i.gift_id not in no_catalogo]
+
+    itens = sorted(vivos, key=lambda i: (i.nome.lower(), i.animacao))
     # Numera as variações só de quem tem mais de uma, para o nome do presente
     # continuar limpo no caso comum.
     por_nome: dict[str, list[Item]] = {}

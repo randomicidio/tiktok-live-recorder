@@ -22,6 +22,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
+import catalogo
 import effects_api
 import pacote
 
@@ -384,9 +385,20 @@ class GiftLogger:
         with self._lock:
             self._eventos.clear()
         self._parar.clear()
+        # A lista de presentes do TikTok, em português, é o que dá o nome de
+        # cada presente no pacote. Vai ao fundo e sem cobrança: se a rede não
+        # responder, fica o que já estava guardado, e um presente que falte na
+        # lista entra com o nome que vier no evento.
+        threading.Thread(target=self._nomes_dos_presentes, daemon=True).start()
         self._thread = threading.Thread(target=self._rodar, daemon=True)
         self._thread.start()
         return True
+
+    def _nomes_dos_presentes(self) -> None:
+        try:
+            catalogo.garantir_lista()
+        except Exception as e:                       # noqa: BLE001
+            self.emit("log", f"Lista de presentes do TikTok: {e}")
 
     def stop(self) -> str:
         """Encerra e monta o pacote. Devolve o caminho do .ttgifts."""
@@ -500,7 +512,13 @@ class GiftLogger:
             "t": round(segundos, 3),
             "hora": agora.isoformat(timespec="seconds"),
             "gift_id": _num(getattr(gift, "id", 0)),
-            "nome": getattr(gift, "name", "") or "",
+            # O nome vem do catálogo, em português; o do evento entra só quando
+            # o presente é novo demais para estar na lista guardada. O idioma
+            # do evento é o que o TikTok escolher para a conexão, e o que a
+            # pessoa vê no aplicativo dela é o outro.
+            "nome": catalogo.nome_em_portugues(
+                _num(getattr(gift, "id", 0)),
+                getattr(gift, "name", "") or ""),
             "diamantes": _num(getattr(gift, "diamond_count", 0)),
             "quantidade": _num(getattr(event, "repeat_count", 1), 1),
             "effect_ids": _ids_de_efeito(gift),

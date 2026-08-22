@@ -984,6 +984,12 @@ class LinhaDoTempo(tk.Canvas):
 DICA_NAVEGACAO = ("na barra: roda = zoom · Alt+roda ou rodinha = navegar · "
                   "botão direito arrastando = marcar o trecho")
 
+# O botão de exportar diz o que vai sair. Recortar vale para qualquer vídeo -
+# com pacote, sem pacote, baixado de onde for -; as camadas só entram quando
+# há registro para desenhar, e prometê-las sem isso seria mentira.
+TEXTO_EXPORTAR_TRECHO = "Exportar trecho do vídeo"
+TEXTO_EXPORTAR_CAMADAS = "Exportar vídeo com as camadas"
+
 
 def _pasta_das_gravacoes() -> str:
     """A pasta que o gravador usa, lida do config.json.
@@ -1759,7 +1765,7 @@ class Editor(ttk.Frame):
         acoes.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         acoes.columnconfigure(1, weight=1)
         self.btn_exportar = tk.Button(
-            acoes, text="Exportar vídeo com as camadas", command=self._exportar,
+            acoes, text=TEXTO_EXPORTAR_TRECHO, command=self._exportar,
             font=("Segoe UI", 10, "bold"), bg="#15803d", fg="white",
             disabledforeground="#bbf7d0", bd=2, padx=16, pady=8, cursor="hand2")
         self.btn_exportar.grid(row=0, column=0, rowspan=2, sticky="w")
@@ -2082,7 +2088,8 @@ class Editor(ttk.Frame):
         else:
             self.pacote = None
             self._agenda = []
-            self.pacote_var.set("nenhum pacote encontrado — vincule ou adicione animações à mão")
+            self.pacote_var.set("sem pacote — dá para recortar assim mesmo, "
+                                "vincular um ou pôr animações à mão")
             self._preencher_lista()
 
     def _fixar_primeiro_quadro(self, pronto_id: int) -> None:
@@ -2977,6 +2984,13 @@ class Editor(ttk.Frame):
             if self.player and self.player.disponivel and self.video:
                 self.btn_play.configure(
                     text="❚❚  Pausar" if self.player.tocando else "▶  Tocar")
+            # Só quando muda: o botão troca de largura junto com o texto, e
+            # remontar a linha da exportação cinco vezes por segundo à toa
+            # faria a barra de progresso tremer ao lado.
+            if not self._exportando:
+                texto = self._texto_exportar()
+                if self.btn_exportar.cget("text") != texto:
+                    self.btn_exportar.configure(text=texto)
         except tk.TclError:
             return
         self.after(200, self._tique)
@@ -3049,12 +3063,29 @@ class Editor(ttk.Frame):
 
     # ---------------------------------------------------------- exportar
 
+    def _tem_camadas(self) -> bool:
+        """Se alguma camada vai mesmo sair por cima do vídeo.
+
+        Recortar não depende de pacote nenhum; as camadas, sim - marcadas sem
+        registro para desenhar, elas não põem nada no arquivo.
+        """
+        if self.pacote is None:
+            return False
+        if self.anim_var.get() and self._agenda:
+            return True
+        return bool(self.chat_var.get() or self.contador_var.get())
+
+    def _texto_exportar(self) -> str:
+        """O botão diz o que vai acontecer: compor ou só recortar."""
+        return (TEXTO_EXPORTAR_CAMADAS if self._tem_camadas()
+                else TEXTO_EXPORTAR_TRECHO)
+
     def _exportar(self) -> None:
         if self._exportando:
             return
-        if not self.video or not self.pacote:
-            messagebox.showinfo("Falta o pacote",
-                                "Abra o vídeo e vincule o pacote de presentes.")
+        if not self.video:
+            messagebox.showinfo("Falta o vídeo",
+                                "Abra um vídeo para recortar o trecho.")
             return
         inicio, fim = self.inicio_var.get(), self.fim_var.get()
         if fim <= inicio:
@@ -3063,7 +3094,10 @@ class Editor(ttk.Frame):
             return
 
         base, _ext = os.path.splitext(self.video)
-        sugestao = os.path.basename(base) + "_com_presentes.mp4"
+        # Prometer "com_presentes" num arquivo que é só o recorte confundiria
+        # quem for procurar o corte na pasta depois.
+        sufixo = "_com_presentes" if self._tem_camadas() else "_trecho"
+        sugestao = os.path.basename(base) + sufixo + ".mp4"
         destino = filedialog.asksaveasfilename(
             title="Salvar vídeo", defaultextension=".mp4",
             initialfile=sugestao,
@@ -3156,7 +3190,7 @@ class Editor(ttk.Frame):
         self._exportando = False
         try:
             self.btn_exportar.configure(state="normal",
-                                        text="Exportar vídeo com as camadas")
+                                        text=self._texto_exportar())
             self.progresso.grid_remove()
             self.btn_cancelar.grid_remove()
             self.progresso_var.set("")

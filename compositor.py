@@ -994,9 +994,13 @@ def _rodar_ffmpeg(args: list[str], dur: float, progresso=None,
     return proc.returncode, "\n".join(erros[-8:])
 
 
-def exportar(video: str, pac: pacote_mod.Pacote, saida: str,
+def exportar(video: str, pac: pacote_mod.Pacote | None, saida: str,
              opcoes: Opcoes, emit=lambda *a: None, cancelar=None) -> bool:
     """Monta o vídeo final. Devolve True se deu certo.
+
+    `pac` pode vir em None: aí o que sai é o trecho recortado e mais nada. As
+    camadas saem do registro da live, e sem registro não há o que desenhar -
+    mas recortar não depende dele, e vale para qualquer vídeo aberto.
 
     `cancelar` é consultado de tempos em tempos; devolvendo True, a exportação
     para e o arquivo pela metade é apagado.
@@ -1017,7 +1021,8 @@ def exportar(video: str, pac: pacote_mod.Pacote, saida: str,
     # Medido em exportações reais: desenhar o chat fica perto da metade do
     # trabalho; sem ele, a codificação é tudo. É o suficiente para a barra
     # andar de forma honesta em vez de saltar de 0 a 100.
-    desenha_chat = bool(opcoes.chat or opcoes.contador_presentes)
+    desenha_chat = pac is not None and bool(opcoes.chat
+                                            or opcoes.contador_presentes)
     peso_chat = 0.5 if desenha_chat else 0.0
 
     def andou(fracao: float, fase: str) -> None:
@@ -1072,7 +1077,7 @@ def exportar(video: str, pac: pacote_mod.Pacote, saida: str,
                 idx += 1
 
         # ---- camada dos presentes
-        if opcoes.animacoes:
+        if opcoes.animacoes and pac is not None:
             agenda = agendar(pac, temp, largura, altura, inicio, fim)
             emit("log", f"Animações no trecho: {len(agenda)}")
             for item in agenda:

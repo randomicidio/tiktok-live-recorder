@@ -288,6 +288,14 @@ de entregar um app quebrado.*
 chat e o cartão de presente. A prévia mostra tudo isso ao vivo, no lugar e no
 instante em que vai sair no arquivo.
 
+**Recortar não pede pacote.** Qualquer vídeo aberto aqui pode ser cortado e
+exportado: um replay baixado de outro lugar, um arquivo que nunca passou pelo
+gravador, um vídeo que não tem nada a ver com live. Sem `.ttgifts` e sem
+animação posta à mão o botão diz **Exportar trecho do vídeo** e sai só o corte,
+com o áudio e a sincronia que você acertou; havendo alguma camada para compor,
+ele volta a dizer **Exportar vídeo com as camadas**. As camadas é que dependem
+do registro da live — o corte, não.
+
 **A barra de navegação.** Clicar leva direto ao ponto clicado. Ao fundo vai a
 forma de onda do áudio, e por cima dela as marcas de **Início** (verde) e
 **Fim** (vermelho), que podem ser arrastadas. A roda do mouse aproxima a vista

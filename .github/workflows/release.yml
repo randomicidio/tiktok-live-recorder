@@ -238,30 +238,21 @@ jobs:
           e devolve no vídeo o **chat** e as **animações de presente**, que o replay
           oficial do TikTok não tem.
 
-          ## O que tem de novo na 1.2
+          ## O que tem de novo na 1.3
 
-          - **Animação de presente posta à mão.** Na aba Editar, escolha qualquer
-            presente do catálogo do TikTok e ponha a animação onde o vídeo está
-            parado. Ela entra na fila como as outras — espera a anterior acabar,
-            aparece na prévia e sai no MP4. É o que serve para um replay baixado de
-            outro lugar, que não tem `.ttgifts` e portanto não tem presente nenhum.
-          - **O catálogo é o do TikTok**, e não só o das suas gravações: os presentes
-            com animação de tela cheia, com o ícone oficial e o **nome em português**.
-            A lista fica guardada e abre na hora; a animação escolhida é baixada só
-            quando você a usa.
-          - **De quem foi o presente.** Digite o `@` e o nome e a foto vêm do TikTok:
-            o cartão do contador fica igual ao de um presente de verdade.
-          - **A prévia toca o som das animações**, no volume do mesmo fader que vale
-            para a exportação. Antes o som só existia no arquivo exportado.
-          - **Os presentes gravados ganham o nome oficial em português** no `.ttgifts`
-            — o nome que vinha no evento da live saía no idioma que o TikTok escolhia
-            para a conexão.
-          - **A janela não esconde mais nada.** O tamanho mínimo sai do próprio
-            layout, e o painel da direita rola quando a tela é baixa: a linha do
-            tempo, o trecho a exportar e o botão de exportar ficam sempre à vista.
-          - **Correção:** o trecho exportado agora tem a duração pedida. Uma animação
-            que começava perto do fim segurava a saída até o vídeo dela acabar, e o
-            clipe terminava com segundos parados.
+          - **Recortar qualquer vídeo.** A aba Editar deixou de exigir um pacote de
+            presentes para exportar. Abra o arquivo que for — um replay baixado de
+            outro lugar, um vídeo que nunca passou pelo gravador, um que não tem
+            nada a ver com live —, marque início e fim e exporte. Antes o botão
+            respondia "Falta o pacote" e não havia como recortar.
+          - **O botão diz o que vai sair.** Sem nada para compor por cima, ele lê
+            **Exportar trecho do vídeo** e o nome sugerido termina em `_trecho`;
+            havendo animação, chat ou contador, volta a ser **Exportar vídeo com as
+            camadas** e `_com_presentes`. A sincronia do áudio e o volume continuam
+            valendo dos dois jeitos.
+
+          As camadas seguem dependendo do registro da live — é dele que saem o chat,
+          o contador e as animações. O corte é que não depende de nada.
 
           O chat desenhado é uma reconstrução — fica muito parecido, não idêntico.
           Emotes próprios da live e selos do apelido só aparecem em gravações novas.

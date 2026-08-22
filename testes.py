@@ -18,6 +18,7 @@ import unittest
 
 import atualizacao
 import catalogo
+import compositor
 import gift_log
 import pacote
 import recorder
@@ -385,6 +386,68 @@ class EspacoEmDisco(unittest.TestCase):
 
     def test_sem_espaco_conhecido_nao_estima(self):
         self.assertEqual(recorder.horas_que_cabem(-1), 0.0)
+
+
+class RecorteSemPacote(unittest.TestCase):
+    """Recortar vale para qualquer vídeo, tenha ou não `.ttgifts` ao lado.
+
+    O ffmpeg fica de fora: o que se testa aqui é a decisão, não a codificação.
+    Chamar `agendar` ou `render_chat` sem pacote levantaria AttributeError, e é
+    exatamente essa a regressão que dava a mensagem "Falta o pacote".
+    """
+
+    def setUp(self):
+        self.chamados = []
+        self.args = []
+        self.original = {n: getattr(compositor, n) for n in
+                         ("dimensoes", "duracao", "agendar", "render_chat",
+                          "_rodar_ffmpeg")}
+        compositor.dimensoes = lambda _c: (720, 1280)
+        compositor.duracao = lambda _c: 60.0
+        compositor.agendar = lambda *a, **k: self.chamados.append("agendar") or []
+        compositor.render_chat = lambda *a, **k: (
+            self.chamados.append("render_chat") or ("", 0))
+
+        def rodar(args, dur, progresso=None, cancelar=None):
+            self.args = args
+            return 0, ""
+        compositor._rodar_ffmpeg = rodar
+
+    def tearDown(self):
+        for nome, fn in self.original.items():
+            setattr(compositor, nome, fn)
+
+    def _exportar(self, opcoes):
+        # O vídeo só precisa existir: quem o leria é o ffmpeg, que está fora.
+        pasta = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, pasta, True)
+        video = os.path.join(pasta, "replay.mp4")
+        open(video, "wb").close()
+        return compositor.exportar(video, None, os.path.join(pasta, "corte.mp4"),
+                                   opcoes)
+
+    def test_recorta_com_as_camadas_marcadas(self):
+        ok = self._exportar(compositor.Opcoes(animacoes=True, chat=True,
+                                              contador_presentes=True,
+                                              inicio=10.0, fim=25.0))
+        self.assertTrue(ok)
+        self.assertEqual(self.chamados, [])          # nada foi desenhar
+        self.assertIn("-ss", self.args)
+        self.assertEqual(self.args[self.args.index("-ss") + 1], "10.000")
+        self.assertEqual(self.args[self.args.index("-t") + 1], "15.000")
+
+    def test_o_trecho_vazio_continua_recusado(self):
+        self.assertFalse(self._exportar(
+            compositor.Opcoes(inicio=30.0, fim=30.0)))
+
+    def test_a_sincronia_do_audio_vale_sem_pacote(self):
+        ok = self._exportar(compositor.Opcoes(atraso_audio=0.5,
+                                              inicio=10.0, fim=20.0))
+        self.assertTrue(ok)
+        # O mesmo arquivo entra duas vezes, com o áudio recortado meio segundo
+        # antes, para o som seguir inteiro nas duas pontas.
+        self.assertEqual(self.args.count("-i"), 2)
+        self.assertIn("9.500", self.args)
 
 
 if __name__ == "__main__":

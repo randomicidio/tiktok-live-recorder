@@ -15,7 +15,7 @@ import subprocess
 import sys
 
 APP_NAME = "Tiktok Live Recorder"
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 
 IS_FROZEN = getattr(sys, "frozen", False)
 IS_MAC = sys.platform == "darwin"
